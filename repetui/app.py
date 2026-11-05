@@ -85,6 +85,7 @@ from .presentation import (
     suggest_field_layout,
 )
 from .recovery import CollectionOwner, InstanceControl, find_owner, force_close, request_close
+from .redraw import replay_terminal_modes
 from .sync import (
     FullSyncDirection,
     SyncOutcome,
@@ -3297,6 +3298,7 @@ class RepetuiApp(App[None]):
     BINDINGS = [
         Binding("q", "quit", "Quit", show=False, priority=True),
         Binding("question_mark", "help", "Help", show=False, priority=True),
+        Binding("ctrl+l", "redraw", show=False, priority=True),
         # ponytail: n yields to custom review keys; make it configurable if needed.
         Binding("n", "open_notification", "Read notification", show=False),
     ]
@@ -3493,6 +3495,15 @@ class RepetuiApp(App[None]):
             self.push_screen(SettingsScreen(screen, initial_tab="sections"))
         else:
             self.push_screen(SettingsScreen(initial_tab="help"))
+
+    def _terminal_driver(self):
+        return None if self.is_headless else self._driver
+
+    def action_redraw(self) -> None:
+        driver = self._terminal_driver()
+        if driver is not None:
+            replay_terminal_modes(driver)
+        self.screen.refresh(repaint=True, layout=True)
 
     def action_quit(self) -> None:
         if isinstance(self.screen, SyncOnQuitPrompt):

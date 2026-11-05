@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "anki==26.9.3",
     "pillow>=11,<13",
-    "textual>=7.3,<8",
+    "textual==7.5.0",
 ]
 
 [project.optional-dependencies]

@@ -5527,3 +5527,45 @@ async def test_help_does_nothing_on_post_sync_recovery_screens(tmp_path, make_sc
         await pilot.press("question_mark")
         await pilot.pause()
         assert app.screen is screen and len(app.screen_stack) == depth
+
+
+@pytest.mark.asyncio
+async def test_ctrl_l_replays_modes_and_repaints_on_settings_and_sync_popup(
+    tmp_path, monkeypatch
+) -> None:
+    started, release = Event(), Event()
+    app, _ = make_held_sync_app(tmp_path, started, release)
+    driver_writes: list[str] = []
+
+    class FakeDriver:
+        def write(self, data: str) -> None:
+            driver_writes.append(data)
+
+        def flush(self) -> None: ...
+
+    monkeypatch.setattr(app, "_terminal_driver", lambda: FakeDriver())
+
+    async def press_ctrl_l_on_current_screen(pilot) -> tuple[int, list]:
+        calls: list = []
+        screen = app.screen
+        original = screen.refresh
+        monkeypatch.setattr(
+            screen, "refresh", lambda *a, **k: (calls.append(k), original(*a, **k))[1]
+        )
+        before = len(driver_writes)
+        await pilot.press("ctrl+l")
+        await pilot.pause()
+        return len(driver_writes) - before, calls
+
+    async with app.run_test(size=(40, 8)) as pilot:
+        await pilot.press("question_mark")
+        assert isinstance(app.screen, SettingsScreen)
+        writes, calls = await press_ctrl_l_on_current_screen(pilot)
+        assert writes == 1 and {"repaint": True, "layout": True} in calls
+        await pilot.press("escape", "s")
+        await asyncio.to_thread(started.wait, 3)
+        assert isinstance(app.screen, SyncPopup)
+        writes, calls = await press_ctrl_l_on_current_screen(pilot)
+        assert writes == 1 and {"repaint": True, "layout": True} in calls
+        release.set()
+        await pilot.pause(1.5)

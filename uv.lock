@@ -603,7 +603,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
-    { name = "textual", specifier = ">=7.3,<8" },
+    { name = "textual", specifier = "==7.5.0" },
 ]
 provides-extras = ["dev"]
 
