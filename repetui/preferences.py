@@ -67,6 +67,19 @@ class ActionFeedbackDuration(str, Enum):
         return order[(order.index(self) + 1) % len(order)]
 
 
+class SyncOnQuit(str, Enum):
+    """Whether quitting with unsynced reviews syncs first."""
+
+    OFF = "off"
+    ASK = "ask"
+    ON = "on"
+
+    @property
+    def next(self) -> SyncOnQuit:
+        order = tuple(SyncOnQuit)
+        return order[(order.index(self) + 1) % len(order)]
+
+
 class Preferences(Protocol):
     """Small injectable seam used by deck, review, and settings screens."""
 
@@ -89,6 +102,18 @@ class Preferences(Protocol):
     def set_action_feedback_duration(
         self, profile: ProfilePaths, duration: ActionFeedbackDuration
     ) -> None: ...
+
+    def audio_at_start(self, profile: ProfilePaths) -> bool: ...
+
+    def set_audio_at_start(self, profile: ProfilePaths, enabled: bool) -> None: ...
+
+    def images_at_start(self, profile: ProfilePaths) -> bool: ...
+
+    def set_images_at_start(self, profile: ProfilePaths, enabled: bool) -> None: ...
+
+    def sync_on_quit(self, profile: ProfilePaths) -> SyncOnQuit: ...
+
+    def set_sync_on_quit(self, profile: ProfilePaths, mode: SyncOnQuit) -> None: ...
 
     def add_on_enabled(self, profile: ProfilePaths, add_on_id: str) -> bool: ...
 
@@ -282,6 +307,42 @@ class JsonPreferences:
                 saved_profile.pop("action_feedback_duration", None)
             else:
                 saved_profile["action_feedback_duration"] = duration.value
+
+    def audio_at_start(self, profile: ProfilePaths) -> bool:
+        saved = self._profiles.get(self._profile_key(profile), {}).get("audio_at_start", True)
+        return saved if isinstance(saved, bool) else True
+
+    def set_audio_at_start(self, profile: ProfilePaths, enabled: bool) -> None:
+        with self._edit(profile=profile) as saved_profile:
+            if enabled:
+                saved_profile.pop("audio_at_start", None)
+            else:
+                saved_profile["audio_at_start"] = False
+
+    def images_at_start(self, profile: ProfilePaths) -> bool:
+        saved = self._profiles.get(self._profile_key(profile), {}).get("images_at_start", False)
+        return saved if isinstance(saved, bool) else False
+
+    def set_images_at_start(self, profile: ProfilePaths, enabled: bool) -> None:
+        with self._edit(profile=profile) as saved_profile:
+            if enabled:
+                saved_profile["images_at_start"] = True
+            else:
+                saved_profile.pop("images_at_start", None)
+
+    def sync_on_quit(self, profile: ProfilePaths) -> SyncOnQuit:
+        saved_profile = self._profiles.get(self._profile_key(profile), {})
+        try:
+            return SyncOnQuit(saved_profile.get("sync_on_quit", SyncOnQuit.ON.value))
+        except (TypeError, ValueError):
+            return SyncOnQuit.ON
+
+    def set_sync_on_quit(self, profile: ProfilePaths, mode: SyncOnQuit) -> None:
+        with self._edit(profile=profile) as saved_profile:
+            if mode is SyncOnQuit.ON:
+                saved_profile.pop("sync_on_quit", None)
+            else:
+                saved_profile["sync_on_quit"] = mode.value
 
     def add_on_enabled(self, profile: ProfilePaths, add_on_id: str) -> bool:
         return self._add_on_state(profile, add_on_id).get("enabled") is True

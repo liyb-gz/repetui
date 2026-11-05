@@ -10,6 +10,7 @@ from repetui.preferences import (
     AnswerLayout,
     JsonPreferences,
     SectionMode,
+    SyncOnQuit,
     default_preferences_path,
 )
 from repetui.presentation import CardTemplateIdentity, TemplateFieldProfile
@@ -479,3 +480,38 @@ def test_nested_add_on_draft_is_atomic_and_retry_preserves_other_preferences(
             "duration": "long" if choice == "setting" else "brief"
         }
         assert reader.mode(JAPANESE_RECOGNITION, "meaning") is SectionMode.FOLD
+
+
+def _profile(tmp_path):
+    return ProfilePaths(tmp_path, "test", tmp_path / "collection.anki2")
+
+
+def test_new_profile_settings_defaults(tmp_path) -> None:
+    prefs, profile = JsonPreferences(tmp_path / "p.json"), _profile(tmp_path)
+    assert prefs.audio_at_start(profile) is True
+    assert prefs.images_at_start(profile) is False
+    assert prefs.sync_on_quit(profile) is SyncOnQuit.ON
+
+
+def test_new_profile_settings_round_trip(tmp_path) -> None:
+    path, profile = tmp_path / "p.json", _profile(tmp_path)
+    prefs = JsonPreferences(path)
+    prefs.set_audio_at_start(profile, False)
+    prefs.set_images_at_start(profile, True)
+    prefs.set_sync_on_quit(profile, SyncOnQuit.ASK)
+    again = JsonPreferences(path)
+    assert (again.audio_at_start(profile), again.images_at_start(profile),
+            again.sync_on_quit(profile)) == (False, True, SyncOnQuit.ASK)
+
+
+def test_sync_on_quit_cycles_off_ask_on() -> None:
+    assert (SyncOnQuit.OFF.next, SyncOnQuit.ASK.next, SyncOnQuit.ON.next) == (
+        SyncOnQuit.ASK, SyncOnQuit.ON, SyncOnQuit.OFF)
+
+
+def test_invalid_saved_sync_on_quit_falls_back(tmp_path) -> None:
+    path, profile = tmp_path / "p.json", _profile(tmp_path)
+    JsonPreferences(path).set_sync_on_quit(profile, SyncOnQuit.ASK)
+    text = path.read_text().replace('"ask"', '"sometimes"')
+    path.write_text(text)
+    assert JsonPreferences(path).sync_on_quit(profile) is SyncOnQuit.ON

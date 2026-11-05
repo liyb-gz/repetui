@@ -52,6 +52,7 @@ from repetui.preferences import (
     AnswerLayout,
     JsonPreferences,
     SectionMode,
+    SyncOnQuit,
 )
 from repetui.presentation import (
     AVReference,
@@ -2751,7 +2752,7 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
         assert controls.display is True
         assert controls.region == (0, 2, 40, 3)
         rows = list(controls.children)
-        assert len(rows) == 17
+        assert len(rows) == 20
         rendered_rows = [
             (
                 str(row.query_one(".control-label").render()),
@@ -2777,6 +2778,9 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
             ("Toggle images", "i"),
             ("Media progress", "S"),
             ("Action feedback duration", "Normal"),
+            ("Audio at start", "On"),
+            ("Images at start", "Off"),
+            ("Sync on quit", "On"),
         ]
         assert settings.query_one("#settings-footer").region == (0, 5, 40, 1)
         assert str(settings.query_one("#settings-footer").render()) == (
@@ -2820,6 +2824,30 @@ async def test_section_settings_recover_from_write_failure(
 
 
 @pytest.mark.asyncio
+async def test_settings_cycle_new_profile_rows(tmp_path) -> None:
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    app, _ = make_app(tmp_path, preferences=preferences)
+    async with app.run_test(size=(40, 14)) as pilot:
+        await pilot.press("?")
+        settings = app.screen
+        assert isinstance(settings, SettingsScreen)
+        settings._show_tab("controls")
+        await pilot.pause()
+        view = settings.query_one("#settings-controls")
+        labels = [str(item.query_one(".control-label").render()) for item in view.children]
+        for label in ("Audio at start", "Images at start", "Sync on quit"):
+            assert label in labels
+        for label, check in (
+            ("Sync on quit", lambda: preferences.sync_on_quit(app.profile) is SyncOnQuit.OFF),
+            ("Images at start", lambda: preferences.images_at_start(app.profile) is True),
+            ("Audio at start", lambda: preferences.audio_at_start(app.profile) is False),
+        ):
+            view.index = labels.index(label)
+            await pilot.press("enter")
+            assert check()
+
+
+@pytest.mark.asyncio
 async def test_action_feedback_duration_cycles_in_settings_and_recovers_from_write_failure(
     tmp_path, monkeypatch
 ) -> None:
@@ -2827,10 +2855,11 @@ async def test_action_feedback_duration_cycles_in_settings_and_recovers_from_wri
     app, _ = make_app(tmp_path, preferences=preferences)
 
     async with app.run_test(size=(40, 6)) as pilot:
-        await pilot.press("enter", "?", "h", "G")
+        # G lands on the last row; the duration row now sits three rows above it
+        await pilot.press("enter", "?", "h", "G", "k", "k", "k")
         settings = app.screen
         assert isinstance(settings, SettingsScreen)
-        row = settings.query_one("#settings-controls").children[-1]
+        row = settings.query_one("#settings-controls").children[-4]
         assert str(row.query_one(".control-label").render()) == (
             "Action feedback duration"
         )

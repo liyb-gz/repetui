@@ -1070,6 +1070,24 @@ class ActionFeedbackDurationSettingItem(RepetuiListItem):
         )
 
 
+class ProfileSettingItem(RepetuiListItem):
+    """A cyclable per-profile setting on the controls tab."""
+
+    def __init__(self, key: str, label: str) -> None:
+        super().__init__()
+        self.key = key
+        self.label = label
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.label, classes="control-label")
+        yield Static(classes="control-binding")
+
+    def refresh_value(self, value: str) -> None:
+        self.query_one(".control-binding", Static).update(
+            Text(value, style="#d9d5ce", no_wrap=True)
+        )
+
+
 class AddOnItem(RepetuiListItem):
     """One registered add-on and its profile-scoped enabled state."""
 
@@ -1210,6 +1228,9 @@ class SettingsScreen(Screen[None]):
             ListView(
                 *(ControlSettingItem(action) for action in ReviewAction),
                 ActionFeedbackDurationSettingItem(),
+                ProfileSettingItem("audio_at_start", "Audio at start"),
+                ProfileSettingItem("images_at_start", "Images at start"),
+                ProfileSettingItem("sync_on_quit", "Sync on quit"),
                 id="settings-controls",
             ),
             ListView(
@@ -1245,7 +1266,18 @@ class SettingsScreen(Screen[None]):
         sections = self.query_one("#settings-sections", ListView)
         if sections.children:
             sections.index = 0
+        self._refresh_profile_settings()
         self._show_tab(self.initial_tab)
+
+    def _refresh_profile_settings(self) -> None:
+        prefs, profile = self.repetui.preferences, self.repetui.profile
+        values = {
+            "audio_at_start": "On" if prefs.audio_at_start(profile) else "Off",
+            "images_at_start": "On" if prefs.images_at_start(profile) else "Off",
+            "sync_on_quit": prefs.sync_on_quit(profile).value.title(),
+        }
+        for item in self.query(ProfileSettingItem):
+            item.refresh_value(values[item.key])
 
     def _show_tab(self, tab: str) -> None:
         self.tab = tab
@@ -1341,6 +1373,21 @@ class SettingsScreen(Screen[None]):
                         self._show_footer("[err] feedback duration not saved")
                         return
                     item.refresh_duration(current.next)
+                    self._show_default_footer()
+                    return
+                if isinstance(item, ProfileSettingItem):
+                    prefs, profile = self.repetui.preferences, self.repetui.profile
+                    try:
+                        if item.key == "audio_at_start":
+                            prefs.set_audio_at_start(profile, not prefs.audio_at_start(profile))
+                        elif item.key == "images_at_start":
+                            prefs.set_images_at_start(profile, not prefs.images_at_start(profile))
+                        else:
+                            prefs.set_sync_on_quit(profile, prefs.sync_on_quit(profile).next)
+                    except OSError:
+                        self._show_footer("[err] setting not saved")
+                        return
+                    self._refresh_profile_settings()
                     self._show_default_footer()
                     return
             action = self._selected_control_action()
