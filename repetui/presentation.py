@@ -175,6 +175,15 @@ class _RawSection:
 
 
 @dataclass
+class _MediaCapture:
+    """One open <audio>/<video> element: its identity is every source inside it."""
+
+    kind: str
+    depth: int
+    sources: list[str] = dataclass_field(default_factory=list)
+
+
+@dataclass
 class _RubyCapture:
     base_start: int
     rt_depth: int = 0
@@ -234,8 +243,7 @@ class _RenderedHTMLParser(HTMLParser):
         self._pre_depth = 0
         self._math_tag: str | None = None
         self._math_nested_depth = 0
-        self._media_tag: str | None = None
-        self._media_emitted = False
+        self._media: _MediaCapture | None = None
         self._row_cells = 0
         self._underline_classes = underline_classes
         self._underline_depth = 0
@@ -294,6 +302,11 @@ class _RenderedHTMLParser(HTMLParser):
             )
             self._underline_stack.append((tag, underlined))
             self._underline_depth += int(underlined)
+        if self._media is not None:
+            # Nothing inside a media element is shown; nested sources join its identity.
+            if tag in {"audio", "video", "source"} and (source := attributes.get("src")):
+                self._media.sources.append(_source_id(source))
+            return
         if self._ignored_depth:
             if tag not in self._VOID:
                 self._ignored_depth += 1
@@ -370,9 +383,8 @@ class _RenderedHTMLParser(HTMLParser):
             self._math_nested_depth = 0
             self._emit("[math: ")
         elif tag == "img":
-            human = _label_safe(attributes.get("alt") or attributes.get("title") or "")
-            name = _source_id(attributes.get("src") or "")  # full source, injective
-            label = " ".join(part for part in (human, name) if part)
+            # Identity is the full source only; alt/title never decide sameness.
+            label = _source_id(attributes.get("src") or "")
             kind = "math image" if "latex" in classes else "image"
             start = self._raw_length
             self._emit(f"[{kind}: {label}]" if label else f"[{kind}]")
@@ -381,18 +393,10 @@ class _RenderedHTMLParser(HTMLParser):
                     ImageSpan(start, self._raw_length, attributes.get("src") or "")
                 )
         elif tag in {"audio", "video"}:
-            self._media_tag = tag
-            human = _label_safe(attributes.get("title") or "")
-            name = _source_id(attributes.get("src") or "")
-            label = " ".join(part for part in (human, name) if part)
-            self._media_emitted = bool(label)
-            if label:
-                self._emit(f"[{tag}: {label}]")
-        elif tag == "source" and self._media_tag and not self._media_emitted:
-            label = _source_id(attributes.get("src") or "")
-            if label:
-                self._emit(f"[{self._media_tag}: {label}]")
-                self._media_emitted = True
+            source = attributes.get("src")
+            self._media = _MediaCapture(
+                tag, len(self._underline_stack), [_source_id(source)] if source else []
+            )
         elif tag == "input" and (
             attributes.get("id", "").lower() == "typeans" or "typeans" in classes
         ):
@@ -408,6 +412,10 @@ class _RenderedHTMLParser(HTMLParser):
                     self._underline_depth -= int(underlined)
                 del self._underline_stack[index:]
                 break
+        if self._media is not None:
+            if len(self._underline_stack) >= self._media.depth:
+                return  # still inside the media element
+            self._flush_media()  # closed by its own end tag or by an ancestor's
         if self._ignored_depth:
             self._ignored_depth -= 1
             return
@@ -449,14 +457,21 @@ class _RenderedHTMLParser(HTMLParser):
             self._pre_depth -= 1
         elif tag == "code" and not self._pre_depth:
             self._emit("`")
-        elif tag in {"audio", "video"}:
-            self._media_tag = None
-            self._media_emitted = False
         elif tag in self._BLOCKS or tag == "tr":
             self._emit("\n")
 
+    def _flush_media(self) -> None:
+        media, self._media = self._media, None
+        if media is not None:
+            label = " ".join(media.sources)
+            self._emit(f"[{media.kind}: {label}]" if label else f"[{media.kind}]")
+
+    def close(self) -> None:
+        super().close()
+        self._flush_media()  # an unclosed media element still ends at the document end
+
     def handle_data(self, data: str) -> None:
-        if self._media_tag:
+        if self._media is not None:
             return  # <audio>/<video> fallback text is never shown
         if self._ignored_depth:
             return
@@ -648,19 +663,34 @@ def _marked_text(
     return result
 
 
+def _label_repeats_text(section: PresentationSection) -> bool:
+    """A `Label: body` section whose label is also the start of its text."""
+    return bool(section.label) and not section.label_is_content and (
+        section.text.casefold().startswith(f"{section.label}:".casefold())
+    )
+
+
+def _visible_text(section: PresentationSection) -> str:
+    """Label and text in display order, each visible media occurrence once."""
+    if section.label and not section.label_is_content and not _label_repeats_text(section):
+        return f"{section.label}\n{section.text}"
+    return section.display_text
+
+
 def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[PresentationSection, ...]:
     """Redact one side for display, numbering each media kind across the whole side."""
     totals: Counter[str] = Counter()
     for section in sections:
-        totals.update(kind for kind in media_kinds(section.display_text) if kind != "math image")
+        totals.update(kind for kind in media_kinds(_visible_text(section)) if kind != "math image")
     seen: Counter[str] = Counter()
     shown: list[PresentationSection] = []
     for section in sections:
         label = section.label
-        if label and section.label_is_content:
-            label = neutral_media_labels(Text(label), totals, seen).plain
+        if label and _label_repeats_text(section):
+            # Same numbers as the text's own copy of the label, so prefix stripping still works.
+            label = neutral_media_labels(Text(label), totals, seen.copy()).plain
         elif label:
-            label = neutral_label_str(label)
+            label = neutral_media_labels(Text(label), totals, seen).plain
         source_label = neutral_label_str(section.source_label) if section.source_label else None
         marked = neutral_media_labels(
             _marked_text(section.text, section.underlines, section.furigana, section.images),

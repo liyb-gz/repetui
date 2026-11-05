@@ -212,7 +212,7 @@ def test_represents_ruby_lists_tables_code_math_typed_answers_and_media() -> Non
     assert "A │ B" in card.back.text
     assert "if ready:\n    review()" in card.back.text
     assert "[math: x^2 + y^2]" in card.back.text
-    assert "[image: memory diagram diagram.png]" in card.back.text
+    assert "[image: diagram.png]" in card.back.text
     assert "[audio: voice.mp3]" in card.back.text
 
 
@@ -308,7 +308,7 @@ def test_image_occurrences_keep_source_order_when_answer_repeats_question() -> N
     assert [image.source for image in front_section.images] == ["one%20pic.png", "two.png"]
     assert [image.source for image in back_section.images] == ["answer.png"]
     assert [front_section.text[image.start:image.end] for image in front_section.images] == [
-        "[image: first one%2520pic.png]", "[image: two.png]"
+        "[image: one%2520pic.png]", "[image: two.png]"
     ]
     assert back_section.text[back_section.images[0].start:back_section.images[0].end] == (
         "[image: answer.png]"
@@ -544,7 +544,7 @@ def test_dynamic_template_falls_back_to_a_safe_suggested_field_profile() -> None
     ]
     assert card.back.text == (
         f"りょう\n\n• fishing\n\n漁をする\n\n{dictionary_entry.strip()}"
-        "\n\n[image: answer diagram answer.png]"
+        "\n\n[image: answer.png]"
     )
     assert "Need help" not in card.front.text + card.back.text
     assert "View the card" not in card.front.text + card.back.text
@@ -751,3 +751,81 @@ def test_display_redaction_keeps_underline_furigana_and_image_offsets() -> None:
     assert [(shown.text[i.start:i.end], i.source) for i in shown.images] == [
         ("[image]", "p q.png")
     ]
+
+
+def test_title_with_different_child_sources_is_different_media() -> None:
+    def clip(name: str) -> str:
+        return f'<audio title="clip"><source src="{name}"></audio>'
+
+    assert not _field_is_present(_render_document(clip("b.mp3")), _render_document(clip("a.mp3")))
+    assert _field_is_present(_render_document(clip("a.mp3")), _render_document(clip("a.mp3")))
+    card = present_card(RawCardContent(
+        CardTemplateIdentity(913, "Clips", 0, "Card 1"),
+        clip("a.mp3"),
+        f"<div>{clip('a.mp3')}</div><div>{clip('b.mp3')}</div>",
+    ))
+    assert "b.mp3" in card.back.text
+    assert "b.mp3" not in card.front.text
+
+
+def test_same_source_with_different_alt_or_title_is_the_same_media() -> None:
+    assert _field_is_present(
+        _render_document('<img src="a.png" alt="new">'),
+        _render_document('<img src="a.png" alt="old">'),
+    )
+    assert _field_is_present(
+        _render_document('<audio src="a.mp3" title="new"></audio>'),
+        _render_document('<audio src="a.mp3" title="old"></audio>'),
+    )
+    assert "pic" not in _render_document('<img src="a.png" alt="pic">').text
+
+
+def test_media_identity_collects_every_source_of_one_element() -> None:
+    doc = _render_document(
+        '<video src="main.mp4" title="t"><source src="alt.webm"><source src="alt.ogv"></video>'
+    )
+    assert doc.text == "[video: main.mp4 alt.webm alt.ogv]"
+
+
+@pytest.mark.parametrize("html", [
+    '<audio src="outer.mp3"><video src="nested.mp4">SECRET</video>SECRET fallback</audio>',
+    '<audio src="outer.mp3"><audio src="nested.mp3">SECRET</audio>SECRET fallback</audio>',
+    '<video src="outer.mp4"><div>SECRET <b>fallback</b></div><p>SECRET</p></video>',
+])
+def test_nested_media_never_emits_fallback_text(html) -> None:
+    doc = _render_document(f"<div>before</div>{html}<div>after</div>")
+    assert "SECRET" not in doc.text and "fallback" not in doc.text
+    assert "before" in doc.text and "after" in doc.text
+    assert doc.text.count("[") == 1
+
+
+def test_unclosed_media_never_emits_fallback_text() -> None:
+    to_end = _render_document('before <audio src="a.mp3">SECRET fallback')
+    assert to_end.text == "before [audio: a.mp3]"
+    closed_by_parent = _render_document('<div>q <audio src="a.mp3">SECRET</div><div>after</div>')
+    assert "SECRET" not in closed_by_parent.text
+    assert "[audio: a.mp3]" in closed_by_parent.text and "after" in closed_by_parent.text
+
+
+def test_visible_heading_labels_share_the_side_numbering() -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import SectionState, compose_review
+    from repetui.preferences import SectionMode
+
+    card = present_card(raw(
+        "question",
+        "<hr id=answer><h2>[sound:a.mp3] Meaning:</h2>body [sound:b.mp3]"
+        "<h2>Other</h2>[sound:c.mp3]",
+    ))
+    shown = display_presentation(card).back.sections
+    assert shown[0].label == "[audio 1] Meaning"
+    assert shown[0].text == "[audio 1] Meaning: body [audio 2]"
+    assert shown[1].text == "[audio 3]"
+    states = tuple(
+        SectionState(section, SectionMode.FOLD, expanded=True) for section in card.back.sections
+    )
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=True, sections=states
+    ).plain
+    assert "▾ [audio 1] Meaning\nbody [audio 2]" in flow
+    assert "[audio 3]" in flow and "[audio]" not in flow
