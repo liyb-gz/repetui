@@ -23,10 +23,22 @@ class _Writable(Protocol):
     def flush(self) -> None: ...
 
 
+# Enabled by Textual only after the terminal answered the ?2048$p query (LinuxDriver.process_message):
+# in-band window resize, then pixel mouse reporting. A re-attached terminal starts with both off, so
+# without them Textual ignores SIGWINCH (in-band mode) and scales cell mouse coordinates as pixels.
+IN_BAND_RESIZE_SEQUENCE = "\x1b[?2048h"
+MOUSE_PIXELS_SEQUENCE = "\x1b[?1016h"
+
+
 def replay_terminal_modes(driver: _Writable) -> None:
-    """Write the mode sequences once.
+    """Write the mode sequences once, plus the in-band resize / pixel mouse modes the driver uses.
 
     Never call start/resume_application_mode here (they spawn threads).
     """
-    driver.write(TERMINAL_MODE_SEQUENCES)
+    sequences = TERMINAL_MODE_SEQUENCES
+    if getattr(driver, "_in_band_window_resize", False):
+        sequences += IN_BAND_RESIZE_SEQUENCE   # the terminal answers with a resize report
+    if getattr(driver, "_mouse_pixels", False):
+        sequences += MOUSE_PIXELS_SEQUENCE
+    driver.write(sequences)
     driver.flush()
