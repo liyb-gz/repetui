@@ -32,6 +32,8 @@ from repetui.app import (
     MediaUpdated,
     NotificationDetailScreen,
     OperationStatusPill,
+    RefreshRecoveryScreen,
+    ReopenRecoveryScreen,
     RepetuiApp,
     ReviewScreen,
     SettingsScreen,
@@ -3897,9 +3899,107 @@ async def test_collection_reopen_failure_routes_to_fatal_surface_after_dismissal
         assert backend.is_open is False
 
         await pilot.press("enter")
-        assert isinstance(app.screen, ErrorScreen)
+        assert isinstance(app.screen, ReopenRecoveryScreen)
         assert "private reopen detail" in str(app.screen.query_one("#error-scroll Static").render())
         assert app.syncing is False
+
+
+class ReopenFailsBackend(FakeBackend):
+    """Opens normally at startup, then fails `fail_reopens` reopens after the first close."""
+
+    def __init__(self, *args, fail_reopens: int = 1, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fail_reopens = fail_reopens
+        self.synced_once = False
+
+    def close(self) -> None:
+        super().close()
+        self.synced_once = True
+
+    def open(self) -> None:
+        if self.synced_once and self.fail_reopens > 0:
+            self.fail_reopens -= 1
+            raise CollectionInUseError("in use")
+        super().open()
+
+
+def reopen_app(tmp_path, fail_reopens: int, outcome: SyncStatus = SyncStatus.SYNCED):
+    backend = ReopenFailsBackend(fail_reopens=fail_reopens)
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
+    app = RepetuiApp(
+        backend, profile, JsonPreferences(tmp_path / "preferences.json"),
+        syncer=lambda _p: SyncOutcome(outcome),
+    )
+    return app, backend
+
+
+@pytest.mark.asyncio
+async def test_reopen_failure_offers_retry_that_recovers(tmp_path) -> None:
+    app, backend = reopen_app(tmp_path, fail_reopens=1)  # the sync's own reopen fails
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ReopenRecoveryScreen)
+        assert not backend.is_open
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        assert backend.is_open and not isinstance(app.screen, ReopenRecoveryScreen)
+        assert isinstance(app.screen, DeckScreen)
+
+
+@pytest.mark.asyncio
+async def test_reopen_retry_failure_stays_and_q_exits(tmp_path, monkeypatch) -> None:
+    app, backend = reopen_app(tmp_path, fail_reopens=2)  # sync reopen + first retry fail
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, ReopenRecoveryScreen) and not backend.is_open
+        assert "Still in use" in str(app.screen.query_one("#reopen-message", Static).render())
+        await pilot.press("q")
+        await pilot.pause()
+        assert exits == [1]
+
+
+@pytest.mark.asyncio
+async def test_reopen_retry_can_be_repeated_until_the_collection_is_free(tmp_path) -> None:
+    app, backend = reopen_app(tmp_path, fail_reopens=3)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        for _ in range(2):
+            await pilot.press("r")
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, ReopenRecoveryScreen) and not backend.is_open
+        await pilot.press("r")
+        await pilot.pause(0.3)
+        assert backend.is_open and isinstance(app.screen, DeckScreen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("screen_class", [ErrorScreen, RefreshRecoveryScreen])
+async def test_q_on_error_screens_quits_even_with_a_reserved_sync(
+    tmp_path, monkeypatch, screen_class,
+) -> None:
+    app, _ = make_app(tmp_path)
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.push_screen(ErrorScreen("boom") if screen_class is ErrorScreen else screen_class())
+        await pilot.pause()
+        assert app.lifecycle.begin_sync()  # q normally waits for a running sync
+        await pilot.press("q")
+        await pilot.pause()
+        assert exits == [1]
 
 
 @pytest.mark.asyncio
@@ -4846,6 +4946,91 @@ async def test_interrupted_media_restarts_after_failed_sync(tmp_path, monkeypatc
         await pilot.pause(0.5)
         await pilot.press("escape")
         await pilot.pause()
+        assert restarted == [1]
+
+
+def refresh_fails(app, monkeypatch, times: int) -> list[int]:
+    """Make the next `times` refresh_open_screens calls raise; returns the call log."""
+    real, calls = app.refresh_open_screens, []
+
+    def flaky() -> None:
+        calls.append(1)
+        if len(calls) <= times:
+            raise BackendError("private refresh detail")
+        real()
+
+    monkeypatch.setattr(app, "refresh_open_screens", flaky)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_media_interrupted_by_sync_resumes_after_refresh_recovery(
+    tmp_path, monkeypatch,
+) -> None:
+    app, _ = make_app(tmp_path, syncer=lambda _p: SyncOutcome(SyncStatus.OFFLINE))
+    restarted: list[int] = []
+    monkeypatch.setattr(app, "_start_media_downloads", lambda: restarted.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, FakeMediaTask())
+        refresh_fails(app, monkeypatch, times=2)  # popup close, then the first retry
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, RefreshRecoveryScreen)
+        assert app._media_interrupted and restarted == []
+        await pilot.press("r")  # still failing: stay blocked, media still stopped
+        await pilot.pause()
+        assert isinstance(app.screen, RefreshRecoveryScreen) and restarted == []
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, DeckScreen)
+        assert restarted == [1] and not app._media_interrupted
+
+
+@pytest.mark.asyncio
+async def test_media_interrupted_by_sync_resumes_after_reopen_recovery(
+    tmp_path, monkeypatch,
+) -> None:
+    app, backend = reopen_app(tmp_path, fail_reopens=1, outcome=SyncStatus.OFFLINE)
+    restarted: list[int] = []
+    monkeypatch.setattr(app, "_start_media_downloads", lambda: restarted.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, FakeMediaTask())
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ReopenRecoveryScreen)
+        assert app._media_interrupted and restarted == []  # nothing to restart: collection closed
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        assert backend.is_open and isinstance(app.screen, DeckScreen)
+        assert restarted == [1] and not app._media_interrupted
+
+
+@pytest.mark.asyncio
+async def test_reopen_recovery_whose_refresh_fails_hands_over_to_refresh_recovery(
+    tmp_path, monkeypatch,
+) -> None:
+    app, backend = reopen_app(tmp_path, fail_reopens=1, outcome=SyncStatus.OFFLINE)
+    restarted: list[int] = []
+    monkeypatch.setattr(app, "_start_media_downloads", lambda: restarted.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, FakeMediaTask())
+        refresh_fails(app, monkeypatch, times=1)  # the refresh after the reopen retry
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ReopenRecoveryScreen)
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        assert backend.is_open and isinstance(app.screen, RefreshRecoveryScreen)
+        assert restarted == []  # the view is still blocked
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, DeckScreen)
         assert restarted == [1]
 
 

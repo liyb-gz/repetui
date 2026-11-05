@@ -266,6 +266,55 @@ class RefreshRecoveryScreen(ErrorScreen):
             self.notify("Could not refresh yet. Try again or quit.", severity="warning")
             return
         self.app.pop_screen()
+        # A refresh error skipped the resume that follows a successful sync popup.
+        cast("RepetuiApp", self.app)._resume_interrupted_media()
+
+
+class ReopenRecoveryScreen(ErrorScreen):
+    """The collection could not be reopened after sync; let the user retry."""
+
+    BINDINGS = [Binding("r", "retry", "Retry", show=False)]
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            "Another program is using the Anki collection.\n"
+            "Quit Anki Desktop, then press r to retry.\n\n"
+            f"({detail})"
+        )
+        self._working = False
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("repetui · collection in use", id="error-header"),
+            VerticalScroll(Static(Text(self.message), id="reopen-message"), id="error-scroll"),
+            Static("r retry · q quit", classes="surface-footer"),
+            id="error-layout",
+        )
+
+    def action_retry(self) -> None:
+        if not self._working:
+            self._working = True
+            self.run_worker(self._retry(), group="reopen-recovery", exclusive=True)
+
+    async def _retry(self) -> None:
+        app = cast("RepetuiApp", self.app)
+        try:
+            await asyncio.to_thread(app.lifecycle.open)
+        except BackendError as exc:  # includes CollectionInUseError
+            self.query_one("#reopen-message", Static).update(
+                Text(f"Still in use. Quit Anki Desktop, then press r.\n\n({exc})")
+            )
+            return
+        finally:
+            self._working = False
+        if app.backend.is_open:
+            self.app.pop_screen()
+            try:
+                app.refresh_open_screens()
+            except Exception:
+                self.app.push_screen(RefreshRecoveryScreen())
+                return
+            app._resume_interrupted_media()
 
 
 class InstanceCloseRequested(Message):
@@ -3421,6 +3470,8 @@ class RepetuiApp(App[None]):
             self.screen.action_back()
         elif isinstance(self.screen, CompletionCelebrationScreen):
             self.screen.action_skip()
+        elif isinstance(self.screen, ErrorScreen):
+            self.exit()  # recovery and error screens always quit directly
         elif not self.syncing:
             self.exit()
 
@@ -3566,7 +3617,7 @@ class RepetuiApp(App[None]):
                 self.push_screen(RefreshRecoveryScreen())
                 return
         if fatal and fatal_error is not None:
-            self.push_screen(ErrorScreen(f"Could not reopen the Anki collection: {fatal_error}"))
+            self.push_screen(ReopenRecoveryScreen(fatal_error))
         else:
             self._resume_interrupted_media()
             self._maybe_show_media_progress()
