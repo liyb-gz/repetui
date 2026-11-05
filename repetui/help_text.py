@@ -7,7 +7,10 @@ from rich.cells import cell_len
 from .controls import ReviewAction, ReviewControls
 
 _WIDTH = 9
-_MAX_COLUMNS = 40
+# A 40-column pane leaves 39 for text: the help scrollbar takes one column.
+_MAX_COLUMNS = 39
+# Help-only wording; ReviewAction.label stays the short settings-row label.
+_HELP_LABELS = {ReviewAction.FLAG: "flag (then 0–7)"}
 
 
 def _line(key: str, label: str) -> str:
@@ -52,13 +55,20 @@ def build_help(controls: ReviewControls, herdr_keys: str | None) -> str:
         _line("g / G", "top / bottom"),
         _line("esc", "decks"),
     ]
-    lines += [_line(key(action), action.label.lower()) for action in ReviewAction]
+    lines += [
+        _line(key(action), _HELP_LABELS.get(action, action.label.lower()))
+        for action in ReviewAction
+    ]
     lines += [
         "",
         "settings",
         _line("h / l", "previous / next tab"),
+        _line("tab", "next tab"),
         _line("j / k", "select / scroll"),
+        _line("g / G", "top / bottom"),
+        _line("space", "change"),
         _line("enter", "change / rebind"),
+        _line("backspace", "default binding"),
         _line("esc", "return"),
     ]
     herdr = _parse_herdr_keys(herdr_keys)

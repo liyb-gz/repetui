@@ -48,6 +48,7 @@ from repetui.backend import BackendError, CollectionInUseError, Deck, DueCounts,
 from repetui.config import ProfilePaths
 from repetui.controls import ReviewAction, ReviewControls
 from repetui.deck_tree import VisibleDeckRow
+from repetui.help_text import build_help
 from repetui.media_sync import MediaSyncSnapshot, MediaSyncStatus
 from repetui.native_images import NativeImageOverlay
 from repetui.preferences import (
@@ -3359,6 +3360,37 @@ async def test_help_tab_follows_rebinding(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deck_sync_follows_the_rebound_sync_key(tmp_path) -> None:
+    started = Event()
+    release = Event()
+
+    def fake_sync(profile: ProfilePaths) -> SyncOutcome:
+        started.set()
+        release.wait(timeout=2)
+        return SyncOutcome(SyncStatus.SYNCED)
+
+    app, _ = make_app(tmp_path, syncer=fake_sync)
+    async with app.run_test(size=(40, 6)) as pilot:
+        try:
+            app.save_review_controls(
+                app.review_controls.with_binding(ReviewAction.SYNC, "z")
+            )
+            assert isinstance(app.screen, DeckScreen)
+            await pilot.press("s")
+            await pilot.pause()
+            assert not started.is_set()
+            assert isinstance(app.screen, DeckScreen)
+
+            await pilot.press("z")
+            assert started.wait(timeout=1)
+            await pilot.pause()
+            assert isinstance(app.screen, SyncPopup)
+        finally:
+            release.set()
+            await pilot.pause(1.2)
+
+
+@pytest.mark.asyncio
 async def test_help_tab_shows_unbound_media_progress(tmp_path) -> None:
     app, _ = make_app(tmp_path)
     async with app.run_test(size=(40, 12)) as pilot:
@@ -3384,6 +3416,30 @@ async def test_help_tab_lists_herdr_keys_when_configured(tmp_path, monkeypatch) 
         text = str(app.screen.query_one("#settings-help-text", Static).render())
         assert "herdr" in text
         assert "prefix+a" in text and "prefix+shift+a" in text
+        # 39 columns of text beside the scrollbar: no help line may wrap
+        help_static = app.screen.query_one("#settings-help-text", Static)
+        assert help_static.region.height == len(text.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_help_renders_bracket_keys_verbatim_not_as_markup(
+    tmp_path, monkeypatch
+) -> None:
+    herdr_keys = "bottom=prefix+[a];side=prefix+shift+]"
+    monkeypatch.setenv("REPETUI_HERDR_KEYS", herdr_keys)
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.press("question_mark")
+        settings = app.screen
+        controls = app.review_controls.with_binding(ReviewAction.HARD, "[")
+        controls = controls.with_binding(ReviewAction.GOOD, "]")
+        assert settings._apply_review_controls(controls)
+        await pilot.pause()
+        rendered = str(settings.query_one("#settings-help-text", Static).render())
+        assert rendered.splitlines() == build_help(controls, herdr_keys).splitlines()
+        assert any(row.strip().startswith("[") and "hard" in row for row in rendered.splitlines())
+        assert any(row.strip().startswith("]") and "good" in row for row in rendered.splitlines())
+        assert any("prefix+[a]" in row for row in rendered.splitlines())
 
 
 @pytest.mark.asyncio
@@ -3395,8 +3451,8 @@ async def test_controls_tab_rows_are_one_line_tall_at_40x24(tmp_path) -> None:
         settings._show_tab("controls")
         await pilot.pause()
         rows = list(settings.query_one("#settings-controls").children)
-        assert len(rows) == 20
-        assert [row.region.height for row in rows] == [1] * 20
+        assert len(rows) == len(ReviewAction) + 4
+        assert [row.region.height for row in rows] == [1] * len(rows)
 
 
 class FailingBackend(FakeBackend):

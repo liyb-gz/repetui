@@ -546,7 +546,7 @@ class DeckScreen(Screen[None]):
         Binding("j", "down", "Down", show=False),
         Binding("k", "up", "Up", show=False),
         Binding("tab", "toggle_deck", "Expand/collapse", show=False),
-        Binding("s", "sync", "Sync", show=False),
+        Binding("s", "sync", "Sync", show=False, id="review.sync"),
         Binding("S", "media_progress", "Media", show=False, id="review.media_progress"),
     ]
 
@@ -1234,7 +1234,7 @@ class SettingsScreen(Screen[None]):
             Static("settings", id="settings-header"),
             Static(id="settings-tabs"),
             VerticalScroll(
-                Static(id="settings-help-text"),
+                Static(id="settings-help-text", markup=False),
                 id="settings-help",
             ),
             ListView(
