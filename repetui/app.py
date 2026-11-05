@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -56,6 +57,7 @@ from .flow import (
     section_name,
     section_states,
 )
+from .help_text import build_help
 from .images import (
     ImagePreviewError,
     expand_image_previews,
@@ -191,41 +193,6 @@ class MediaUpdated(Message):
         super().__init__()
         self.task = task
         self.snapshot = snapshot
-
-
-_HELP_TEXT = (
-    "everywhere\n"
-    "  ?        settings\n"
-    "  n        read current notification\n"
-    "  q        quit\n\n"
-    "decks\n"
-    "  j / k    move\n"
-    "  tab      expand / collapse\n"
-    "  enter    review\n"
-    "  s        sync\n"
-    "           during media downloads: reopen progress\n"
-    "           enter/esc dismisses progress; studying continues\n"
-    "  counts   total  new/learning/review\n\n"
-    "review\n"
-    "  enter    reveal / Good\n"
-    "  space    reveal / open selected fold\n"
-    "  1–4      Again / Hard / Good / Easy\n"
-    "  u        undo\n"
-    "  b        bury\n"
-    "  x        suspend\n"
-    "  f        flag (then 0–7)\n"
-    "  r        toggle inline readings\n"
-    "  j / k    scroll and select folds\n"
-    "  g / G    top / bottom\n"
-    "  s        sync\n"
-    "  esc      decks\n\n"
-    "settings\n"
-    "  h / l    previous / next tab\n"
-    "  tab      next tab\n"
-    "  j / k    select / scroll\n"
-    "  space    show → fold → hide\n"
-    "  esc      return"
-)
 
 
 class ErrorScreen(Screen[None]):
@@ -1267,7 +1234,7 @@ class SettingsScreen(Screen[None]):
             Static("settings", id="settings-header"),
             Static(id="settings-tabs"),
             VerticalScroll(
-                Static(_HELP_TEXT),
+                Static(id="settings-help-text"),
                 id="settings-help",
             ),
             ListView(
@@ -1322,6 +1289,7 @@ class SettingsScreen(Screen[None]):
         if sections.children:
             sections.index = 0
         self._refresh_profile_settings()
+        self._refresh_help()
         self._show_tab(self.initial_tab)
 
     def _refresh_profile_settings(self) -> None:
@@ -1593,6 +1561,11 @@ class SettingsScreen(Screen[None]):
         }[self.tab]
         self._show_footer(message)
 
+    def _refresh_help(self) -> None:
+        self.query_one("#settings-help-text", Static).update(
+            build_help(self.repetui.review_controls, os.environ.get("REPETUI_HERDR_KEYS"))
+        )
+
     def _refresh_control_bindings(self) -> None:
         for item in self.query(ControlSettingItem):
             item.refresh_binding(self.repetui.review_controls)
@@ -1608,6 +1581,7 @@ class SettingsScreen(Screen[None]):
         self.capturing = None
         self.pending_binding = None
         self._refresh_control_bindings()
+        self._refresh_help()
         self._show_default_footer()
         return True
 
@@ -3001,6 +2975,8 @@ class RepetuiApp(App[None]):
     TemplateFieldsSettingItem.-highlight,
     SectionSettingItem.-highlight,
     ControlSettingItem.-highlight,
+    ActionFeedbackDurationSettingItem.-highlight,
+    ProfileSettingItem.-highlight,
     AddOnItem.-highlight,
     AddOnSettingItem.-highlight {
         background: #293034;
@@ -3116,6 +3092,8 @@ class RepetuiApp(App[None]):
     TemplateFieldsSettingItem,
     SectionSettingItem,
     ControlSettingItem,
+    ActionFeedbackDurationSettingItem,
+    ProfileSettingItem,
     AddOnItem,
     AddOnSettingItem {
         height: 1;

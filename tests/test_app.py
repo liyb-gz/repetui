@@ -3331,11 +3331,72 @@ async def test_help_lists_the_review_card_operations(tmp_path) -> None:
 
     async with app.run_test(size=(40, 10)) as pilot:
         await pilot.press("?")
-        help_text = str(app.screen.query_one("#settings-help Static").render())
-        assert "u        undo" in help_text
-        assert "b        bury" in help_text
-        assert "x        suspend" in help_text
-        assert "f        flag" in help_text
+        help_text = str(app.screen.query_one("#settings-help-text", Static).render())
+        for line in ("u        undo", "b        bury", "x        suspend", "f        flag"):
+            assert line in help_text
+        assert "m        toggle audio" in help_text
+        assert "ctrl+l   redraw screen" in help_text
+        assert "herdr" not in help_text
+
+
+@pytest.mark.asyncio
+async def test_help_tab_follows_rebinding(tmp_path) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.press("question_mark")
+        settings = app.screen
+        settings._show_tab("controls")
+        await pilot.pause()
+        settings._apply_review_controls(
+            app.review_controls.with_binding(ReviewAction.TOGGLE_AUDIO, "z")
+        )
+        await pilot.pause()
+        text = str(settings.query_one("#settings-help-text", Static).render())
+        assert any(
+            line.strip().startswith("z") and "toggle audio" in line
+            for line in text.splitlines()
+        )
+
+
+@pytest.mark.asyncio
+async def test_help_tab_shows_unbound_media_progress(tmp_path) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.press("question_mark")
+        settings = app.screen
+        settings._apply_review_controls(
+            app.review_controls.with_binding(ReviewAction.SYNC, "S", replace=True)
+        )
+        await pilot.pause()
+        text = str(settings.query_one("#settings-help-text", Static).render())
+        assert any(
+            "media progress" in line and "unbound" in line
+            for line in text.splitlines()
+        )
+
+
+@pytest.mark.asyncio
+async def test_help_tab_lists_herdr_keys_when_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REPETUI_HERDR_KEYS", "bottom=prefix+a;side=prefix+shift+a")
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 12)) as pilot:
+        await pilot.press("question_mark")
+        text = str(app.screen.query_one("#settings-help-text", Static).render())
+        assert "herdr" in text
+        assert "prefix+a" in text and "prefix+shift+a" in text
+
+
+@pytest.mark.asyncio
+async def test_controls_tab_rows_are_one_line_tall_at_40x24(tmp_path) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 24)) as pilot:
+        await pilot.press("question_mark")
+        settings = app.screen
+        settings._show_tab("controls")
+        await pilot.pause()
+        rows = list(settings.query_one("#settings-controls").children)
+        assert len(rows) == 20
+        assert [row.region.height for row in rows] == [1] * 20
 
 
 class FailingBackend(FakeBackend):
