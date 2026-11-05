@@ -340,6 +340,7 @@ async def test_image_only_card_with_multiple_pictures_scrolls_at_40x6(tmp_path) 
         '<hr id=answer>Done',
     )
     app, backend = make_app(tmp_path, content)
+    app.images_enabled = True
     backend.media_path = lambda name: tmp_path / name
 
     async with app.run_test(size=(40, 6)) as pilot:
@@ -462,6 +463,7 @@ async def test_native_preview_and_detail_clear_on_review_transitions_at_40x6(tmp
         '<hr id=answer><img src="back.png">',
     )
     app, backend = make_app(tmp_path, content)
+    app.images_enabled = True
     backend.media_path = lambda name: tmp_path / name
     emitted: list[str] = []
 
@@ -4697,6 +4699,7 @@ async def test_arriving_media_preserves_card_answer_folds_scroll_and_audio(tmp_p
     extra = present_card(content).back.sections[-1]
     preferences.set_mode(content.identity, extra.id, SectionMode.FOLD)
     app, backend = make_app(tmp_path, content, preferences)
+    app.images_enabled = True
     backend.media_path = lambda name: tmp_path / name
     created = controlled_media(backend, monkeypatch)
     async with app.run_test(size=(40, 6)) as pilot:
@@ -4892,6 +4895,7 @@ async def test_no_media_name_reaches_any_screen_or_notice(tmp_path, monkeypatch)
         )[1],
     )
     app, _ = make_app(tmp_path, media_leak_card())
+    app.images_enabled = True
     async with app.run_test(size=(60, 24)) as pilot:
         await pilot.press("enter")
         review = app.screen
@@ -4911,3 +4915,79 @@ async def test_no_media_name_reaches_any_screen_or_notice(tmp_path, monkeypatch)
         assert not [s for s in visible_strings(app.screen) if "SECRET" in s]
     assert any("SECRET-back.mp3" in str(path) for call in plays for path in call)
     assert not [n for n in notices if "SECRET" in n]
+
+
+class RecordingAudio:
+    plays: list[tuple] = []
+    stops: list[int] = []
+
+    def __init__(self, report_error) -> None: ...
+    def play(self, paths) -> None: RecordingAudio.plays.append(tuple(paths))
+    def stop(self) -> None: RecordingAudio.stops.append(1)
+    async def close(self) -> None: ...
+
+
+def audio_card(identity_id: int) -> RawCardContent:
+    return RawCardContent(
+        CardTemplateIdentity(identity_id, "Audio", 0, "Card 1"), "<div>q</div>",
+        "<div>q</div><hr id=answer><div>a</div>",
+        front_av=(AVReference("audio", "f.mp3"),), back_av=(AVReference("audio", "b.mp3"),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_audio_toggle_controls_autoplay_but_not_replay(tmp_path, monkeypatch) -> None:
+    RecordingAudio.plays, RecordingAudio.stops = [], []
+    monkeypatch.setattr(app_module, "CardAudioPlayer", RecordingAudio)
+    app, _ = make_app(tmp_path, audio_card(920))
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("enter")
+        assert app.audio_enabled is True
+        assert len([p for p in RecordingAudio.plays if p]) == 1
+        await pilot.press("m")
+        assert app.audio_enabled is False and RecordingAudio.stops
+        await pilot.press("enter")
+        assert len([p for p in RecordingAudio.plays if p]) == 1
+        await pilot.press("p")
+        assert len([p for p in RecordingAudio.plays if p]) == 2
+
+
+@pytest.mark.asyncio
+async def test_saved_audio_off_is_loaded_at_start_and_toggle_is_session_only(
+    tmp_path, monkeypatch
+) -> None:
+    RecordingAudio.plays, RecordingAudio.stops = [], []
+    monkeypatch.setattr(app_module, "CardAudioPlayer", RecordingAudio)
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))  # same as make_app
+    preferences.set_audio_at_start(profile, False)
+    app, _ = make_app(tmp_path, audio_card(921), preferences)
+    assert app.audio_enabled is False
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("enter")
+        assert not [p for p in RecordingAudio.plays if p]
+        await pilot.press("m", "escape", "enter")      # toggle on, back to decks, reopen deck
+        assert app.audio_enabled is True
+        assert preferences.audio_at_start(profile) is False
+
+
+@pytest.mark.asyncio
+async def test_images_toggle_controls_previews_and_keeps_viewer(tmp_path, monkeypatch) -> None:
+    calls: list[int] = []
+    real = app_module.expand_image_previews
+    monkeypatch.setattr(app_module, "expand_image_previews",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    content = RawCardContent(
+        CardTemplateIdentity(922, "Pic", 0, "Card 1"),
+        '<div>q</div><img src="p.png">',
+        "<div>a</div>",
+    )
+    app, _ = make_app(tmp_path, content)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert app.images_enabled is False and calls == []
+        assert review._visible_images == ("p.png",)
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.images_enabled is True and calls

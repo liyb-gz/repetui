@@ -1881,6 +1881,8 @@ class ReviewScreen(NativeImageScreen):
         Binding("r", "readings", "Readings", show=False, id="review.readings"),
         Binding("p", "replay_audio", "Replay audio", show=False, id="review.replay_audio"),
         Binding("v", "view_image", "View picture", show=False, id="review.view_image"),
+        Binding("m", "toggle_audio", "Audio", show=False, id="review.toggle_audio"),
+        Binding("i", "toggle_images", "Images", show=False, id="review.toggle_images"),
         Binding("j", "scroll_down", "Scroll down", show=False),
         Binding("k", "scroll_up", "Scroll up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
@@ -1973,6 +1975,9 @@ class ReviewScreen(NativeImageScreen):
 
     def _play_side(self, *, replay: bool = False) -> None:
         if self.card is None or self.card.raw_content is None:
+            self._audio.stop()
+            return
+        if not replay and not self.repetui.audio_enabled:
             self._audio.stop()
             return
         references = (
@@ -2082,14 +2087,15 @@ class ReviewScreen(NativeImageScreen):
                     pending_pictures.append(path)
         self._pending_pictures = tuple(pending_pictures)
         native_marks: list[tuple[Path, int, int]] = []
-        flow = expand_image_previews(
-            flow,
-            self.repetui.backend.media_path,
-            self._rendered_card_width,
-            max(1, min(3, self.size.height - 3)),
-            native_marks,
-            media_pending=self.repetui.media_downloading,
-        )
+        if self.repetui.images_enabled:
+            flow = expand_image_previews(
+                flow,
+                self.repetui.backend.media_path,
+                self._rendered_card_width,
+                max(1, min(3, self.size.height - 3)),
+                native_marks,
+                media_pending=self.repetui.media_downloading,
+            )
         self._native_pictures = tuple(NativePicture(*mark) for mark in native_marks)
         self._refresh_action_row(actions)
         content.update(flow)
@@ -2203,6 +2209,19 @@ class ReviewScreen(NativeImageScreen):
     def action_replay_audio(self) -> None:
         if not self._busy() and self.card is not None:
             self._play_side(replay=True)
+
+    def action_toggle_audio(self) -> None:
+        self.repetui.audio_enabled = not self.repetui.audio_enabled
+        if not self.repetui.audio_enabled:
+            self._audio.stop()
+        self.notify("audio on" if self.repetui.audio_enabled else "audio off", timeout=1.5)
+
+    def action_toggle_images(self) -> None:
+        if self._busy():
+            return
+        self.repetui.images_enabled = not self.repetui.images_enabled
+        self._refresh_or_recover(reset_scroll=False)
+        self.notify("images on" if self.repetui.images_enabled else "images off", timeout=1.5)
 
     def action_view_image(self) -> None:
         if self._busy() or self.card is None:
@@ -3219,6 +3238,8 @@ class RepetuiApp(App[None]):
         )
         self.review_controls = self.preferences.review_controls(profile)
         self.set_keymap(self.review_controls.keymap())
+        self.audio_enabled = self.preferences.audio_at_start(profile)
+        self.images_enabled = self.preferences.images_at_start(profile)
         self.lifecycle = CollectionLifecycle(backend, profile, syncer, full_syncer)
         self._sync_popup: SyncPopup | None = None
         self._sync_thread: Thread | None = None
