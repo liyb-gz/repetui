@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,8 @@ def default_anki_base() -> Path:
     override = os.environ.get("REPETUI_ANKI_HOME")
     if override:
         return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Anki2"
     return Path.home() / ".local" / "share" / "Anki2"
 
 
