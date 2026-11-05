@@ -33,6 +33,10 @@ If you have more than one Anki profile:
 repetui --profile PROFILE_NAME
 ```
 
+`repetui` looks for your collection in Anki's data directory:
+`~/Library/Application Support/Anki2` on macOS and `~/.local/share/Anki2`
+elsewhere. Set `REPETUI_ANKI_HOME` to use a different directory.
+
 ### Collection already in use
 
 The startup recovery screen offers `r` to retry after manual closure and `c`
@@ -65,13 +69,17 @@ Retry. Recovery never deletes collection, lock, WAL, or journal files.
 | Review | `Space` | Open or close the selected folded section |
 | Review | `r` | Toggle bracketed readings directly on the card |
 | Review | `p` | Replay recorded sound on the visible card side |
+| Review | `m` | Toggle audio on or off for this session |
+| Review | `i` | Toggle images on or off for this session |
 | Review | `v` | View visible pictures larger; Tab switches pictures, arrows pan, Escape returns |
 | Review | `u`, `b`, `x`, `f` | Undo, bury, suspend, flag |
 | Card-field setup | `Space`, `J` / `K`, `a`, `p`, `v`, `Enter` | Change role, reorder, suggest a layout, preview, flip question/answer, save |
-| Decks / review | `s` | Sync with AnkiWeb |
+| Decks / review | `s` | Sync reviews with AnkiWeb; a running media download is cancelled first and resumes afterwards |
+| Decks / review | `S` | Show media download progress; retry an interrupted download |
 | Anywhere | `?` | Help, controls, and section settings |
 | Anywhere | `n` | Read the current notification; `j` / `k` scroll, Escape returns |
-| Anywhere | `q` | Quit |
+| Anywhere | `ctrl+l` | Redraw the screen |
+| Anywhere | `q` | Quit; syncs unsynced reviews first, depending on **Sync on quit** |
 
 Navigation remains fixed so it is always recoverable. Review actions can be
 rebound under `?` → Controls; conflicts are shown before an existing action is
@@ -80,6 +88,20 @@ Instant, Brief, Normal, or Relaxed. This controls successful Undo, Bury,
 Suspend, and Flag confirmations; errors remain readable. While a successful
 confirmation is visible, `Enter` dismisses it and immediately continues with
 the current card's primary action, while `Escape` only dismisses it.
+
+The Controls tab also holds three profile-scoped settings:
+
+| Setting | Values | Default | Effect |
+| --- | --- | --- | --- |
+| Audio at start | On / Off | On | Whether recorded sound is on when `repetui` starts; `m` toggles it for the session |
+| Images at start | On / Off | Off | Whether pictures are shown (rather than `[image]`) when `repetui` starts; `i` toggles it for the session |
+| Sync on quit | Off / Ask / On | On | What `q` does when you have unsynced reviews |
+
+With **Sync on quit** On, `q` syncs your reviews first and quits when the sync
+succeeds. If the sync fails, `q` shows “Not synced” and a second `q` quits
+anyway. Ask prompts `Sync? y yes · n no · esc stay`; Off quits at once.
+Nothing is synced on quit when you have not reviewed anything since the last
+sync.
 
 ### Notifications
 
@@ -95,18 +117,21 @@ take precedence over `n`.
 
 ### Media sync
 
-`s` synchronizes cards first, then downloads images and audio in the background.
+`s` always synchronizes your reviews with AnkiWeb first, then downloads images
+and audio in the background. If a media download is still running, `s` cancels
+it, syncs your reviews, and resumes the remaining downloads afterwards.
 The media window opens automatically for incoming files or a media error;
 checks and uploads keep you on your study screen.
 The media window shows Anki's added, checked, and removed file counts. Press
-`Enter` or `Escape` to dismiss it and keep studying; `s` reopens progress without
+`Enter` or `Escape` to dismiss it and keep studying; `S` reopens progress without
 starting another transfer. A `↓` in review and “media ↓” on the deck screen
 indicate downloads are still running.
 
 Missing pictures show `[picture downloading]` while media sync is active and
 refresh when files arrive. Missing audio can be replayed once it is ready. You
-can continue reviewing after a download error; `s` retries media sync. Quitting
-Repetui stops downloads; the next sync resumes the remaining work.
+can continue reviewing after a download error; `S` retries the interrupted
+download. Quitting Repetui stops downloads; the next sync resumes the remaining
+work.
 
 ### Full-sync conflicts
 
@@ -141,10 +166,12 @@ falls back to its visible text rather than being silently discarded.
 
 Recorded sound plays when its question or answer side appears. Clips on a side
 play in order; `p` replays that side, and moving to another card stops playback.
-Playback uses `mpv`, `ffplay`, or `paplay` if available. `mpv` or `ffplay` is
-recommended for broad audio format support; `paplay` supports formats available
-through the system's libsndfile. Missing media or unavailable playback shows a
-warning and leaves review usable.
+Playback uses `mpv`, `ffplay`, `afplay` (macOS), or `paplay` if available.
+`mpv` or `ffplay` is recommended for broad audio format support; `paplay`
+supports formats available through the system's libsndfile. Missing media or unavailable playback shows a
+warning and leaves review usable. Media file names are never shown: sound and
+pictures appear as `[audio]` and `[image]`, numbered per card side
+(`[audio 1]`, `[audio 2]`) when a side has more than one.
 
 Local raster pictures appear as colored-character previews within the card.
 On a direct Kitty terminal, or a supported direct WezTerm version, Repetui also
