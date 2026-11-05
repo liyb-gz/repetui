@@ -38,6 +38,7 @@ from repetui.app import (
     ReviewScreen,
     SettingsScreen,
     StartupRecoveryScreen,
+    SyncOnQuitPrompt,
     SyncPopup,
     TemplateFieldSetupScreen,
     TemplateFieldsSettingItem,
@@ -5327,3 +5328,202 @@ async def test_images_toggle_controls_previews_and_keeps_viewer(tmp_path, monkey
         await pilot.press("i")
         await pilot.pause()
         assert app.images_enabled is True and calls
+
+
+def quit_app(tmp_path, monkeypatch, mode, outcome=SyncStatus.SYNCED, full_syncer=None):
+    synced: list[int] = []
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
+    preferences.set_sync_on_quit(profile, mode)
+    app, backend = make_app(
+        tmp_path, preferences=preferences,
+        syncer=lambda _p: (synced.append(1), SyncOutcome(outcome))[1],
+        full_syncer=full_syncer,
+    )
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    return app, backend, synced, exits
+
+
+# Keys that start a sync on quit: On syncs on q; Ask syncs after y.
+SYNCING_QUIT_KEYS = [(SyncOnQuit.ON, ("q",)), (SyncOnQuit.ASK, ("q", "y"))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [SyncOnQuit.OFF, SyncOnQuit.ASK, SyncOnQuit.ON])
+async def test_quit_without_reviews_exits_immediately(tmp_path, monkeypatch, mode) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, mode)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("q")
+        await pilot.pause()
+        assert (synced, exits) == ([], [1])
+
+
+@pytest.mark.asyncio
+async def test_on_syncs_then_exits(tmp_path, monkeypatch) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, SyncOnQuit.ON)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("q")
+        await pilot.pause(1.6)
+        assert synced == [1] and exits == [1]
+
+
+@pytest.mark.asyncio
+async def test_off_exits_without_sync(tmp_path, monkeypatch) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, SyncOnQuit.OFF)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("q")
+        await pilot.pause()
+        assert (synced, exits) == ([], [1])
+
+
+@pytest.mark.asyncio
+async def test_ask_prompt_blocks_q_and_help_then_esc_y_n(tmp_path, monkeypatch) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, SyncOnQuit.ASK)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("q")
+        assert isinstance(app.screen, SyncOnQuitPrompt)
+        assert "Sync? y yes · n no · esc stay" in str(app.screen.query_one(".status-pill").render())
+        depth = len(app.screen_stack)
+        await pilot.press("q", "question_mark")
+        assert len(app.screen_stack) == depth and isinstance(app.screen, SyncOnQuitPrompt)
+        await pilot.press("escape")
+        assert not isinstance(app.screen, SyncOnQuitPrompt) and exits == []
+        await pilot.press("q", "n")
+        await pilot.pause()
+        assert synced == [] and exits == [1]
+
+
+@pytest.mark.asyncio
+async def test_ask_y_syncs_then_exits(tmp_path, monkeypatch) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, SyncOnQuit.ASK)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("q", "y")
+        await pilot.pause(1.6)
+        assert synced == [1] and exits == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+async def test_failed_sync_arms_second_q_and_new_review_disarms(
+    tmp_path, monkeypatch, mode, quit_keys
+) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, mode, SyncStatus.OFFLINE)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press(*quit_keys)
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert exits == [] and app.quit_unsynced_armed and not app.exit_after_sync
+        assert any(
+            n.message == "Not synced. Press q again to quit anyway." for n in app._notifications
+        )
+        app.mark_reviewed()
+        assert app.quit_unsynced_armed is False
+        app.quit_unsynced_armed = True
+        await pilot.press("q")
+        await pilot.pause()
+        assert exits == [1] and synced == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+async def test_conflict_escape_stays_open_not_armed(tmp_path, monkeypatch, mode, quit_keys) -> None:
+    app, _, _, exits = quit_app(tmp_path, monkeypatch, mode, SyncStatus.FULL_SYNC_REQUIRED)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press(*quit_keys)
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert exits == [] and not app.quit_unsynced_armed and not app.exit_after_sync
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+@pytest.mark.parametrize(("key", "word"), [("d", "DOWNLOAD"), ("u", "UPLOAD")])
+async def test_conflict_resolution_exits(tmp_path, monkeypatch, mode, quit_keys, key, word) -> None:
+    app, _, _, exits = quit_app(
+        tmp_path, monkeypatch, mode, SyncStatus.FULL_SYNC_REQUIRED,
+        full_syncer=lambda _p, _d: SyncOutcome(SyncStatus.SYNCED),
+    )
+    async with app.run_test(size=(60, 12)) as pilot:
+        app.mark_reviewed()
+        await pilot.press(*quit_keys)
+        await pilot.pause(0.5)
+        await pilot.press(key, *word, "enter")
+        await pilot.pause(2.0)
+        assert exits == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [SyncOnQuit.OFF, SyncOnQuit.ASK, SyncOnQuit.ON])
+async def test_failed_manual_sync_neither_arms_nor_exits(tmp_path, monkeypatch, mode) -> None:
+    app, _, synced, exits = quit_app(tmp_path, monkeypatch, mode, SyncStatus.OFFLINE)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert synced == [1] and exits == []
+        assert app.unsynced_reviews and not app.quit_unsynced_armed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keys", [("enter", "enter", "3"), ("enter", "b"), ("enter", "x"),
+                                  ("enter", "f", "1")])
+async def test_mutations_mark_unsynced(tmp_path, monkeypatch, keys) -> None:
+    app, _, _, _ = quit_app(tmp_path, monkeypatch, SyncOnQuit.OFF)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press(*keys)
+        await pilot.pause(0.3)
+        assert app.unsynced_reviews is True
+
+
+@pytest.mark.asyncio
+async def test_undo_marks_and_failed_operation_does_not(tmp_path, monkeypatch) -> None:
+    app, backend, _, _ = quit_app(tmp_path, monkeypatch, SyncOnQuit.OFF)
+    async with app.run_test(size=(40, 6)) as pilot:
+        backend.fail_operation = "bury"
+        await pilot.press("enter", "b")
+        await pilot.pause(0.3)
+        assert app.unsynced_reviews is False
+        backend.fail_operation = None
+        await pilot.press("escape", "enter", "enter", "3")
+        await pilot.pause(0.3)
+        app.unsynced_reviews = False
+        await pilot.press("u")
+        await pilot.pause(0.3)
+        assert app.unsynced_reviews is True
+
+
+@pytest.mark.asyncio
+async def test_successful_manual_sync_clears_unsynced(tmp_path, monkeypatch) -> None:
+    app, _, _, _ = quit_app(tmp_path, monkeypatch, SyncOnQuit.OFF)
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press("s")
+        await pilot.pause(1.6)
+        assert app.unsynced_reviews is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_screen", [
+    lambda: ReopenRecoveryScreen("held"), lambda: RefreshRecoveryScreen(),
+])
+async def test_help_does_nothing_on_post_sync_recovery_screens(tmp_path, make_screen) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 6)) as pilot:
+        screen = make_screen()
+        app.push_screen(screen)
+        await pilot.pause()
+        depth = len(app.screen_stack)
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert app.screen is screen and len(app.screen_stack) == depth

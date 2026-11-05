@@ -72,6 +72,7 @@ from .preferences import (
     JsonPreferences,
     Preferences,
     SectionMode,
+    SyncOnQuit,
 )
 from .presentation import (
     CardPresentation,
@@ -2315,6 +2316,7 @@ class ReviewScreen(NativeImageScreen):
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
+        self.repetui.mark_reviewed()
         self._set_rating_feedback(rating)
         self.repetui.dispatch_add_on_event(
             AddOnEvent(
@@ -2376,6 +2378,7 @@ class ReviewScreen(NativeImageScreen):
         if not undone:
             self._show_operation_status("[err] nothing to undo", success=False)
             return
+        self.repetui.mark_reviewed()
         try:
             self.load_next()
         except Exception:
@@ -2430,6 +2433,7 @@ class ReviewScreen(NativeImageScreen):
         except Exception:
             self._show_operation_status(failure_message, success=False)
             return
+        self.repetui.mark_reviewed()
         try:
             self.load_next()
         except Exception:
@@ -2464,6 +2468,7 @@ class ReviewScreen(NativeImageScreen):
         except Exception:
             self._show_operation_status("[err] flag failed", success=False)
             return
+        self.repetui.mark_reviewed()
         try:
             self._refresh_view(reset_scroll=False)
         except Exception:
@@ -2683,6 +2688,22 @@ class FlagSelectionPill(StatusPill):
         """Keep global shortcuts inside the flag-selection state."""
 
 
+class SyncOnQuitPrompt(StatusPill):
+    """Ask whether to sync unsynced reviews before quitting."""
+
+    BINDINGS = [
+        Binding("y", "answer('sync')", show=False),
+        Binding("n", "answer('quit')", show=False),
+        Binding("escape", "answer('')", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__("Sync? y yes · n no · esc stay")
+
+    def action_answer(self, choice: str) -> None:
+        self.dismiss(choice or None)
+
+
 class MediaProgressScreen(ModalScreen[None]):
     """Dismissible progress; media ownership stays with the open collection."""
 
@@ -2802,6 +2823,10 @@ class SyncPopup(StatusPill):
                 )
             )
             yield Input(placeholder="Type the direction to confirm", id="sync-confirm")
+
+    @property
+    def conflict_pending(self) -> bool:
+        return self._conflict
 
     def action_choose_download(self) -> None:
         self._choose_direction(FullSyncDirection.DOWNLOAD)
@@ -3314,6 +3339,9 @@ class RepetuiApp(App[None]):
         self._media_progress_shown = False
         self._media_endpoint: str | None = None
         self._completion_celebration: CompletionCelebrationScreen | None = None
+        self.unsynced_reviews = False
+        self.exit_after_sync = False
+        self.quit_unsynced_armed = False
         self.offered_field_setups: set[tuple[int, int]] = set()
         self._instance_control = InstanceControl(
             lambda: self.post_message(InstanceCloseRequested())
@@ -3452,7 +3480,8 @@ class RepetuiApp(App[None]):
 
     def action_help(self) -> None:
         if self.syncing or isinstance(self.screen, (
-            StartupRecoveryScreen, NotificationDetailScreen,
+            StartupRecoveryScreen, NotificationDetailScreen, SyncOnQuitPrompt,
+            ReopenRecoveryScreen, RefreshRecoveryScreen,
         )):
             return
         screen = self.screen
@@ -3466,6 +3495,8 @@ class RepetuiApp(App[None]):
             self.push_screen(SettingsScreen(initial_tab="help"))
 
     def action_quit(self) -> None:
+        if isinstance(self.screen, SyncOnQuitPrompt):
+            return  # the prompt owns q until it is answered
         if isinstance(self.screen, NotificationDetailScreen):
             self.screen.action_back()
         elif isinstance(self.screen, CompletionCelebrationScreen):
@@ -3473,7 +3504,32 @@ class RepetuiApp(App[None]):
         elif isinstance(self.screen, ErrorScreen):
             self.exit()  # recovery and error screens always quit directly
         elif not self.syncing:
+            self._request_quit()
+
+    def mark_reviewed(self) -> None:
+        self.unsynced_reviews = True
+        self.quit_unsynced_armed = False
+
+    def _request_quit(self) -> None:
+        mode = self.preferences.sync_on_quit(self.profile)
+        if mode is SyncOnQuit.OFF or not self.unsynced_reviews or self.quit_unsynced_armed:
             self.exit()
+        elif mode is SyncOnQuit.ASK:
+            self.push_screen(SyncOnQuitPrompt(), self._sync_on_quit_answer)
+        else:
+            self.run_worker(self._sync_then_exit(), exclusive=True, group="sync-on-quit")
+
+    def _sync_on_quit_answer(self, choice: str | None) -> None:
+        if choice == "sync":
+            self.run_worker(self._sync_then_exit(), exclusive=True, group="sync-on-quit")
+        elif choice == "quit":
+            self.exit()
+
+    async def _sync_then_exit(self) -> None:
+        self.exit_after_sync = True
+        await self.action_sync()
+        if not self.syncing and self._sync_popup is None:
+            self.exit_after_sync = False  # sync never started (e.g. media would not stop)
 
     async def action_sync(self) -> None:
         if self.syncing or self.lifecycle.stopped:
@@ -3597,6 +3653,8 @@ class RepetuiApp(App[None]):
                         severity="warning")
 
     def _finish_sync(self, result: SyncRunResult) -> None:
+        if result.outcome.ok:
+            self.unsynced_reviews = False  # reviews reached AnkiWeb even if reopen then failed
         self._sync_fatal_error = result.reopen_error
         if result.outcome.ok and result.reopen_error is None:
             self._media_endpoint = result.outcome.media_endpoint
@@ -3606,10 +3664,20 @@ class RepetuiApp(App[None]):
             self._sync_popup.finish(result)
 
     def _sync_popup_closed(self, fatal: bool | None) -> None:
+        popup = self._sync_popup
+        conflict = popup is not None and popup.conflict_pending
         fatal_error = self._sync_fatal_error
+        quitting = self.exit_after_sync
+        self.exit_after_sync = False
         self.lifecycle.finish_sync()
         self._sync_popup = None
         self._sync_fatal_error = None
+        if quitting and not self.unsynced_reviews:
+            self.exit()  # reviews reached AnkiWeb; quit even if reopen failed
+            return
+        if quitting and not conflict:
+            self.quit_unsynced_armed = True
+            self.notify("Not synced. Press q again to quit anyway.", severity="warning")
         if self.backend.is_open:
             try:
                 self.refresh_open_screens()
