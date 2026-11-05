@@ -2751,7 +2751,7 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
         assert controls.display is True
         assert controls.region == (0, 2, 40, 3)
         rows = list(controls.children)
-        assert len(rows) == 14
+        assert len(rows) == 17
         rendered_rows = [
             (
                 str(row.query_one(".control-label").render()),
@@ -2773,6 +2773,9 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
             ("Replay audio", "p"),
             ("View picture", "v"),
             ("Sync", "s"),
+            ("Toggle audio", "m"),
+            ("Toggle images", "i"),
+            ("Media progress", "S"),
             ("Action feedback duration", "Normal"),
         ]
         assert settings.query_one("#settings-footer").region == (0, 5, 40, 1)
@@ -3134,7 +3137,7 @@ async def test_failed_control_write_preserves_the_active_mapping(
             raise OSError("disk unavailable")
 
         monkeypatch.setattr(Path, "replace", fail_replace)
-        await pilot.press("m")
+        await pilot.press("n")
 
         assert str(settings.query_one("#settings-footer").render()) == (
             "[err] controls not saved"

@@ -20,6 +20,9 @@ class ReviewAction(str, Enum):
     REPLAY_AUDIO = "replay_audio"
     VIEW_IMAGE = "view_image"
     SYNC = "sync"
+    TOGGLE_AUDIO = "toggle_audio"
+    TOGGLE_IMAGES = "toggle_images"
+    MEDIA_PROGRESS = "media_progress"
 
     @property
     def label(self) -> str:
@@ -37,6 +40,9 @@ class ReviewAction(str, Enum):
             ReviewAction.REPLAY_AUDIO: "Replay audio",
             ReviewAction.VIEW_IMAGE: "View picture",
             ReviewAction.SYNC: "Sync",
+            ReviewAction.TOGGLE_AUDIO: "Toggle audio",
+            ReviewAction.TOGGLE_IMAGES: "Toggle images",
+            ReviewAction.MEDIA_PROGRESS: "Media progress",
         }[self]
 
 
@@ -54,10 +60,13 @@ DEFAULT_REVIEW_BINDINGS: dict[ReviewAction, str] = {
     ReviewAction.REPLAY_AUDIO: "p",
     ReviewAction.VIEW_IMAGE: "v",
     ReviewAction.SYNC: "s",
+    ReviewAction.TOGGLE_AUDIO: "m",
+    ReviewAction.TOGGLE_IMAGES: "i",
+    ReviewAction.MEDIA_PROGRESS: "S",
 }
 
 FIXED_REVIEW_KEYS = frozenset(
-    {"j", "k", "g", "G", "escape", "q", "?", "question_mark", "space"}
+    {"j", "k", "g", "G", "escape", "q", "?", "question_mark", "space", "ctrl+l"}
 )
 SUPPORTED_NAMED_KEYS = frozenset({"enter", "tab"})
 UNBOUND_KEYMAP_SENTINEL = "unbound"
@@ -107,6 +116,7 @@ class ReviewControls:
             bindings[action] = key
         for action in (
             ReviewAction.READINGS, ReviewAction.REPLAY_AUDIO, ReviewAction.VIEW_IMAGE,
+            ReviewAction.TOGGLE_AUDIO, ReviewAction.TOGGLE_IMAGES, ReviewAction.MEDIA_PROGRESS,
         ):
             if action.value not in saved and any(
                 key == DEFAULT_REVIEW_BINDINGS[action]

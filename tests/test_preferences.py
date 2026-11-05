@@ -435,7 +435,7 @@ def test_failed_review_control_write_preserves_active_and_saved_mapping(
 
     monkeypatch.setattr(Path, "replace", fail_replace)
 
-    changed = original.with_binding(ReviewAction.UNDO, "m")
+    changed = original.with_binding(ReviewAction.UNDO, "n")
     with pytest.raises(OSError, match="disk unavailable"):
         preferences.set_review_controls(whskr, changed)
 

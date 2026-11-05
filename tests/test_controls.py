@@ -64,3 +64,33 @@ def test_selected_action_can_restore_its_default_binding() -> None:
     restored = customized.with_default(ReviewAction.UNDO)
 
     assert restored.binding(ReviewAction.UNDO) == "u"
+
+
+def test_new_actions_have_defaults() -> None:
+    controls = ReviewControls.defaults()
+    assert controls.binding(ReviewAction.TOGGLE_AUDIO) == "m"
+    assert controls.binding(ReviewAction.TOGGLE_IMAGES) == "i"
+    assert controls.binding(ReviewAction.MEDIA_PROGRESS) == "S"
+
+
+@pytest.mark.parametrize(
+    ("taken", "action"),
+    [
+        ("m", ReviewAction.TOGGLE_AUDIO),
+        ("i", ReviewAction.TOGGLE_IMAGES),
+        ("S", ReviewAction.MEDIA_PROGRESS),
+    ],
+)
+def test_saved_key_wins_and_new_action_starts_unbound(
+    taken: str, action: ReviewAction
+) -> None:
+    controls = ReviewControls.from_saved({"again": taken})
+    assert controls.binding(ReviewAction.AGAIN) == taken
+    assert controls.binding(action) is None
+    assert controls.binding(ReviewAction.HARD) == "2"
+
+
+def test_ctrl_l_is_fixed() -> None:
+    from repetui.controls import is_supported_control_key
+
+    assert not is_supported_control_key("ctrl+l")
