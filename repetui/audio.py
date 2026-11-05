@@ -15,6 +15,8 @@ def available_player() -> tuple[str, ...]:
         return (player, "--no-video", "--no-terminal", "--really-quiet", "--")
     if player := shutil.which("ffplay"):
         return (player, "-nodisp", "-autoexit", "-loglevel", "error", "-i")
+    if player := shutil.which("afplay"):
+        return (player,)
     if player := shutil.which("paplay"):
         return (player, "--")
     return ()

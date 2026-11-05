@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+from repetui import audio as audio_module
 from repetui.audio import CardAudioPlayer
 
 
@@ -154,3 +155,15 @@ async def test_close_reaps_process_even_if_spawn_has_not_returned(tmp_path, monk
     assert player._process is None
     assert not player._tasks
     assert spawned_processes[0].returncode is not None
+
+
+def test_afplay_is_used_when_mpv_and_ffplay_are_missing(monkeypatch) -> None:
+    found = {"afplay": "/usr/bin/afplay"}
+    monkeypatch.setattr(audio_module.shutil, "which", lambda name: found.get(name))
+    assert audio_module.available_player() == ("/usr/bin/afplay",)
+
+
+def test_ffplay_still_beats_afplay(monkeypatch) -> None:
+    found = {"afplay": "/usr/bin/afplay", "ffplay": "/usr/local/bin/ffplay"}
+    monkeypatch.setattr(audio_module.shutil, "which", lambda name: found.get(name))
+    assert audio_module.available_player()[0] == "/usr/local/bin/ffplay"
