@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event
+from threading import Event, Timer
 
 import pytest
 from PIL import Image, ImageDraw
@@ -4373,7 +4373,7 @@ async def test_media_progress_can_be_dismissed_for_review_and_reopened_at_40x6(
         assert created[0].active
         await pilot.press("enter")
         assert app.screen.revealed
-        await pilot.press("s")
+        await pilot.press("S")
         assert type(app.screen).__name__ == "MediaProgressScreen"
         assert len(created) == 1
         await pilot.press("enter")
@@ -4476,7 +4476,7 @@ async def test_late_downloads_open_once_and_manual_progress_stays_available(
         await pilot.pause(1.2)
         assert app.screen is review
         if manual_first:
-            await pilot.press("s")
+            await pilot.press("S")
             assert isinstance(app.screen, MediaProgressScreen)
             await pilot.press("escape")
         created[0].emit(MediaSyncStatus.ACTIVE, added="Added: 0↑ 1↓")
@@ -4488,7 +4488,7 @@ async def test_late_downloads_open_once_and_manual_progress_stays_available(
         created[0].emit(MediaSyncStatus.ACTIVE, added="Added: 0↑ 2↓")
         await pilot.pause()
         assert app.screen is review
-        await pilot.press("s")
+        await pilot.press("S")
         assert isinstance(app.screen, MediaProgressScreen)
         assert len(created) == 1
         await pilot.press("escape")
@@ -4768,7 +4768,7 @@ async def test_background_media_failure_retries_only_media_and_ignores_old_repor
         assert "Offline" in str(app.screen.query_one("#media-progress", Static).render())
         await pilot.press("escape")
         assert app.screen is review
-        await pilot.press("s")
+        await pilot.press("S")
         assert isinstance(app.screen, MediaProgressScreen)
         assert len(created) == 2 and not collection_syncs
         app.post_message(MediaUpdated(created[0], MediaSyncSnapshot(MediaSyncStatus.COMPLETE)))
@@ -4781,6 +4781,157 @@ async def test_background_media_failure_retries_only_media_and_ignores_old_repor
         await pilot.press("escape", "enter", "3")
         assert backend.rating == 3
     assert created[1].cancelled
+
+
+class FakeMediaTask:
+    """Active media transfer whose cancel() ends the task after `stop_after` seconds."""
+
+    def __init__(self, stop_after: float | None = 0.0) -> None:
+        self.done = Event()
+        self.cancelled = False
+        self.stop_after = stop_after
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        if self.stop_after is not None:
+            Timer(self.stop_after, self.done.set).start()
+
+
+def with_active_media(app, monkeypatch, task) -> None:
+    app._media_task = task
+    monkeypatch.setattr(
+        type(app), "media_downloading",
+        property(lambda self: self._media_task is not None and not self._media_task.done.is_set()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_s_reserves_then_cancels_media_then_syncs(tmp_path, monkeypatch) -> None:
+    synced: list[int] = []
+    app, _ = make_app(
+        tmp_path, syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1]
+    )
+    task = FakeMediaTask(stop_after=0.3)
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, task)
+        await pilot.press("s")
+        await pilot.pause(0.1)
+        assert task.cancelled and app.syncing  # reserved before the wait finishes
+        await pilot.pause(1.5)
+        assert synced == [1]
+
+
+@pytest.mark.asyncio
+async def test_media_that_will_not_stop_aborts_sync(tmp_path, monkeypatch) -> None:
+    synced: list[int] = []
+    app, _ = make_app(
+        tmp_path, syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1]
+    )
+    monkeypatch.setattr(type(app), "MEDIA_CANCEL_TIMEOUT", 0.2)
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, FakeMediaTask(stop_after=None))
+        await pilot.press("s")
+        await pilot.pause(0.6)
+        assert synced == [] and not app.syncing
+
+
+@pytest.mark.asyncio
+async def test_interrupted_media_restarts_after_failed_sync(tmp_path, monkeypatch) -> None:
+    app, _ = make_app(tmp_path, syncer=lambda _p: SyncOutcome(SyncStatus.OFFLINE))
+    restarted: list[int] = []
+    monkeypatch.setattr(app, "_start_media_downloads", lambda: restarted.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        with_active_media(app, monkeypatch, FakeMediaTask())
+        await pilot.press("s")
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert restarted == [1]
+
+
+@pytest.mark.asyncio
+async def test_media_modal_s_syncs_and_S_retries(tmp_path) -> None:
+    synced: list[int] = []
+    app, _ = make_app(
+        tmp_path, syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1]
+    )
+    async with app.run_test(size=(40, 8)) as pilot:
+        app._media_snapshot = MediaSyncSnapshot(
+            MediaSyncStatus.ACTIVE, added="Added: 0↑ 3↓", checked="Checked: 9"
+        )
+        app._show_media_progress()
+        await pilot.pause()
+        assert isinstance(app.screen, MediaProgressScreen)
+        footer = str(app.screen.query_one("#media-footer").render())
+        assert "s: sync" in footer and "S: retry" in footer
+        await pilot.press("s")
+        await pilot.pause(1.5)
+        assert synced == [1]
+
+
+@pytest.mark.asyncio
+async def test_S_opens_media_progress_from_decks_and_review(tmp_path, monkeypatch) -> None:
+    syncs: list[int] = []
+    app, backend = make_app(
+        tmp_path, syncer=lambda _p: (syncs.append(1), SyncOutcome(SyncStatus.SYNCED))[1]
+    )
+    created = controlled_media(backend, monkeypatch)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("S")
+        assert isinstance(app.screen, DeckScreen)  # nothing to show yet
+        app._start_media_downloads()
+        await pilot.pause()
+        created[0].emit(MediaSyncStatus.ACTIVE, added="Added: 0↑ 1↓")
+        await pilot.pause()
+        assert isinstance(app.screen, MediaProgressScreen)
+        await pilot.press("escape")
+        assert isinstance(app.screen, DeckScreen)
+        await pilot.press("S")
+        assert isinstance(app.screen, MediaProgressScreen)
+        await pilot.press("escape", "enter")
+        assert isinstance(app.screen, ReviewScreen)
+        await pilot.press("S")
+        assert isinstance(app.screen, MediaProgressScreen)
+        assert syncs == [] and len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_media_failure_notice_says_S_retries(tmp_path, monkeypatch) -> None:
+    app, backend = make_app(tmp_path)
+    created = controlled_media(backend, monkeypatch)
+    notices: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(40, 6)) as pilot:
+        app._start_media_downloads()
+        await pilot.pause()
+        app.post_message(MediaUpdated(
+            created[0], MediaSyncSnapshot(MediaSyncStatus.FAILED, failure=SyncStatus.OFFLINE)
+        ))
+        await pilot.pause()
+    assert (
+        "Media downloads interrupted; S retries. You can keep studying.",
+        {"severity": "warning"},
+    ) in notices
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("failure", "text"), [
+    (SyncStatus.OFFLINE, "Offline; study now or retry with S."),
+    (SyncStatus.AUTH_REQUIRED, "Sign in to Anki, then retry with S."),
+    (SyncStatus.FAILED, "Downloads interrupted; retry with S."),
+])
+async def test_media_failure_texts_name_S(tmp_path, failure, text) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(60, 8)) as pilot:
+        app._media_snapshot = MediaSyncSnapshot(MediaSyncStatus.FAILED, failure=failure)
+        app._show_media_progress()
+        await pilot.pause()
+        assert isinstance(app.screen, MediaProgressScreen)
+        header = str(app.screen.query_one("#media-header", Static).render())
+        assert header == "Media sync failed · S: retry"
+        assert text in str(app.screen.query_one("#media-progress", Static).render())
 
 
 @pytest.mark.asyncio

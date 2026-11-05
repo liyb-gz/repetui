@@ -529,6 +529,7 @@ class DeckScreen(Screen[None]):
         Binding("k", "up", "Up", show=False),
         Binding("tab", "toggle_deck", "Expand/collapse", show=False),
         Binding("s", "sync", "Sync", show=False),
+        Binding("S", "media_progress", "Media", show=False, id="review.media_progress"),
     ]
 
     @property
@@ -609,8 +610,11 @@ class DeckScreen(Screen[None]):
             return
         self.reload(selected_deck_id=item.deck.id)
 
-    def action_sync(self) -> None:
-        cast("RepetuiApp", self.app).action_sync()
+    async def action_sync(self) -> None:
+        await self.repetui.action_sync()
+
+    def action_media_progress(self) -> None:
+        self.repetui.action_media_progress()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
@@ -1888,6 +1892,7 @@ class ReviewScreen(NativeImageScreen):
         Binding("g", "scroll_top", "Top", show=False),
         Binding("G", "scroll_bottom", "Bottom", show=False),
         Binding("s", "sync", "Sync", show=False, id="review.sync"),
+        Binding("S", "media_progress", "Media", show=False, id="review.media_progress"),
     ]
 
     def __init__(self, deck: Deck) -> None:
@@ -2438,8 +2443,11 @@ class ReviewScreen(NativeImageScreen):
     def action_scroll_bottom(self) -> None:
         self.query_one(VerticalScroll).scroll_end(animate=False)
 
-    def action_sync(self) -> None:
-        self.repetui.action_sync()
+    async def action_sync(self) -> None:
+        await self.repetui.action_sync()
+
+    def action_media_progress(self) -> None:
+        self.repetui.action_media_progress()
 
 
 class NotificationDetailScreen(ModalScreen[None]):
@@ -2642,6 +2650,7 @@ class MediaProgressScreen(ModalScreen[None]):
         Binding("escape", "back", show=False),
         Binding("enter", "back", show=False),
         Binding("s", "sync", show=False),
+        Binding("S", "media_progress", show=False),
     ]
 
     def __init__(self, snapshot: MediaSyncSnapshot) -> None:
@@ -2652,7 +2661,7 @@ class MediaProgressScreen(ModalScreen[None]):
         yield Vertical(
             Static("", id="media-header"),
             VerticalScroll(Static("", id="media-progress"), id="media-body"),
-            Static("enter/esc: study · s: progress/retry", id="media-footer"),
+            Static("enter/esc: study · s: sync · S: retry", id="media-footer"),
             id="media-layout",
         )
 
@@ -2673,7 +2682,7 @@ class MediaProgressScreen(ModalScreen[None]):
             MediaSyncStatus.STARTING: "Media sync starting…",
             MediaSyncStatus.ACTIVE: "Media downloading…",
             MediaSyncStatus.COMPLETE: "[ok] media synced",
-            MediaSyncStatus.FAILED: "Media sync failed · s: retry",
+            MediaSyncStatus.FAILED: "Media sync failed · S: retry",
             MediaSyncStatus.CANCELLED: "Media sync stopped",
         }[snapshot.status]
         self.query_one("#media-header", Static).update(title)
@@ -2682,9 +2691,9 @@ class MediaProgressScreen(ModalScreen[None]):
             detail = "Media sync finished."
         elif snapshot.status is MediaSyncStatus.FAILED:
             detail = {
-                SyncStatus.OFFLINE: "Offline; study now or retry with s.",
-                SyncStatus.AUTH_REQUIRED: "Sign in to Anki, then retry with s.",
-            }.get(snapshot.failure, "Downloads interrupted; retry with s.")
+                SyncStatus.OFFLINE: "Offline; study now or retry with S.",
+                SyncStatus.AUTH_REQUIRED: "Sign in to Anki, then retry with S.",
+            }.get(snapshot.failure, "Downloads interrupted; retry with S.")
         self.query_one("#media-progress", Static).update(
             Text(
                 f"{snapshot.added or 'Added: 0'}\n"
@@ -2696,8 +2705,11 @@ class MediaProgressScreen(ModalScreen[None]):
     def action_back(self) -> None:
         self.dismiss(None)
 
-    def action_sync(self) -> None:
-        cast("RepetuiApp", self.app).action_sync()
+    async def action_sync(self) -> None:
+        await cast("RepetuiApp", self.app).action_sync()
+
+    def action_media_progress(self) -> None:
+        cast("RepetuiApp", self.app).action_media_progress()
 
 
 class SyncPopup(StatusPill):
@@ -3215,6 +3227,9 @@ class RepetuiApp(App[None]):
         Binding("n", "open_notification", "Read notification", show=False),
     ]
 
+    # Seconds `s` waits for a running media download to stop before giving up.
+    MEDIA_CANCEL_TIMEOUT = 5.0
+
     def __init__(
         self,
         backend: AnkiBackend,
@@ -3245,6 +3260,7 @@ class RepetuiApp(App[None]):
         self._sync_thread: Thread | None = None
         self._sync_fatal_error: str | None = None
         self._media_task: MediaSyncTask | None = None
+        self._media_interrupted = False
         self._media_snapshot: MediaSyncSnapshot | None = None
         self._media_progress_shown = False
         self._media_endpoint: str | None = None
@@ -3408,23 +3424,33 @@ class RepetuiApp(App[None]):
         elif not self.syncing:
             self.exit()
 
-    def action_sync(self) -> None:
+    async def action_sync(self) -> None:
         if self.syncing or self.lifecycle.stopped:
             return
-        if self.media_downloading:
-            self._show_media_progress()
+        if not self.lifecycle.begin_sync():  # reserve before yielding
             return
-        if self._media_snapshot is not None and self._media_snapshot.status in {
-            MediaSyncStatus.FAILED, MediaSyncStatus.CANCELLED,
-        }:
-            self._start_media_downloads()
-            self._show_media_progress()
-            return
-        if not self.lifecycle.begin_sync():
-            return
+        task = self._media_task if self.media_downloading else None
+        if task is not None:
+            # cancel() may block on the task's start lock while native sync starts:
+            # keep it off the UI thread.
+            await asyncio.to_thread(task.cancel)
+            stopped = await asyncio.to_thread(task.done.wait, self.MEDIA_CANCEL_TIMEOUT)
+            if not stopped:
+                self.lifecycle.finish_sync()  # release the reservation; nothing transferred
+                self.notify("Media download did not stop; try again.", severity="warning")
+                return
+            self._media_interrupted = True
         self._sync_popup = SyncPopup()
         self.push_screen(self._sync_popup, self._sync_popup_closed)
         self.call_after_refresh(self._start_sync_thread)
+
+    def action_media_progress(self) -> None:
+        if self._media_snapshot is None:
+            self.notify("No media download.", timeout=1.5)
+            return
+        if self._media_snapshot.status in {MediaSyncStatus.FAILED, MediaSyncStatus.CANCELLED}:
+            self._start_media_downloads()
+        self._show_media_progress()
 
     def _start_sync_thread(self) -> None:
         self._sync_thread = Thread(
@@ -3516,13 +3542,14 @@ class RepetuiApp(App[None]):
         if message.snapshot.status is MediaSyncStatus.COMPLETE:
             self.notify("Media synced.")
         elif message.snapshot.status is MediaSyncStatus.FAILED:
-            self.notify("Media downloads interrupted; s retries. You can keep studying.",
+            self.notify("Media downloads interrupted; S retries. You can keep studying.",
                         severity="warning")
 
     def _finish_sync(self, result: SyncRunResult) -> None:
         self._sync_fatal_error = result.reopen_error
         if result.outcome.ok and result.reopen_error is None:
             self._media_endpoint = result.outcome.media_endpoint
+            self._media_interrupted = False
             self._start_media_downloads()
         if self._sync_popup is not None:
             self._sync_popup.finish(result)
@@ -3541,7 +3568,13 @@ class RepetuiApp(App[None]):
         if fatal and fatal_error is not None:
             self.push_screen(ErrorScreen(f"Could not reopen the Anki collection: {fatal_error}"))
         else:
+            self._resume_interrupted_media()
             self._maybe_show_media_progress()
+
+    def _resume_interrupted_media(self) -> None:
+        if self._media_interrupted and self.backend.is_open:
+            self._media_interrupted = False
+            self._start_media_downloads()
 
     def refresh_open_screens(self) -> None:
         for screen in tuple(self.screen_stack):
