@@ -9,20 +9,21 @@ the field mapping explicitly.
 
 from __future__ import annotations
 
-import os
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from html.parser import HTMLParser
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote
 
 from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 
 from .card_text import INLINE_FURIGANA, annotated, annotations, extract_readings, normalise
+from .media_labels import media_kinds, neutral_label_str, neutral_media_labels
 
 _ANSWER_RULE = re.compile(r'<hr[^>]*\bid\s*=\s*["\']?answer["\']?[^>]*>', re.IGNORECASE)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
@@ -91,7 +92,11 @@ class AVReference:
 
     @property
     def placeholder(self) -> str:
-        return f"[{self.kind}: {self.label}]" if self.label else f"[{self.kind}]"
+        if self.kind == "audio" and self.label:
+            label = _source_id(self.label)
+        else:
+            label = _label_safe(self.label or "")
+        return f"[{self.kind}: {label}]" if label else f"[{self.kind}]"
 
 
 @dataclass(frozen=True)
@@ -365,24 +370,26 @@ class _RenderedHTMLParser(HTMLParser):
             self._math_nested_depth = 0
             self._emit("[math: ")
         elif tag == "img":
-            label = attributes.get("alt") or attributes.get("title")
-            if not label:
-                label = _media_name(attributes.get("src") or "")
-            kind = "math" if "latex" in classes else "image"
+            human = _label_safe(attributes.get("alt") or attributes.get("title") or "")
+            name = _source_id(attributes.get("src") or "")  # full source, injective
+            label = " ".join(part for part in (human, name) if part)
+            kind = "math image" if "latex" in classes else "image"
             start = self._raw_length
-            self._emit(f"[{kind}: {label.strip()}]" if label else f"[{kind}]")
+            self._emit(f"[{kind}: {label}]" if label else f"[{kind}]")
             if kind == "image":
                 self.image_ranges.append(
                     ImageSpan(start, self._raw_length, attributes.get("src") or "")
                 )
         elif tag in {"audio", "video"}:
             self._media_tag = tag
-            label = attributes.get("title") or _media_name(attributes.get("src") or "")
+            human = _label_safe(attributes.get("title") or "")
+            name = _source_id(attributes.get("src") or "")
+            label = " ".join(part for part in (human, name) if part)
             self._media_emitted = bool(label)
             if label:
                 self._emit(f"[{tag}: {label}]")
         elif tag == "source" and self._media_tag and not self._media_emitted:
-            label = _media_name(attributes.get("src") or "")
+            label = _source_id(attributes.get("src") or "")
             if label:
                 self._emit(f"[{self._media_tag}: {label}]")
                 self._media_emitted = True
@@ -449,6 +456,8 @@ class _RenderedHTMLParser(HTMLParser):
             self._emit("\n")
 
     def handle_data(self, data: str) -> None:
+        if self._media_tag:
+            return  # <audio>/<video> fallback text is never shown
         if self._ignored_depth:
             return
         ruby = self._ruby_stack[-1] if self._ruby_stack else None
@@ -605,12 +614,14 @@ def _label_key(value: str) -> str:
     return " ".join(words.split())
 
 
-def _media_name(source: str) -> str:
-    try:
-        path = urlsplit(source.replace("\\", "/")).path
-    except ValueError:
-        return ""
-    return os.path.basename(path)
+def _source_id(value: str) -> str:
+    """Injective, label-safe identity for a media source: percent-encode brackets, %, controls."""
+    return quote(value, safe="/:._-~()+,;=&'!$*@")
+
+
+def _label_safe(value: str) -> str:
+    """Human text (alt/title) inside labels can never contain brackets or line breaks."""
+    return re.sub(r"[\[\]\r\n\v\f\x1c\x1d\x1e\x07\x08\x85\u2028\u2029]+", " ", value).strip()
 
 
 def _image_spans(text: Text) -> tuple[ImageSpan, ...]:
@@ -635,6 +646,40 @@ def _marked_text(
             Style(meta={"repetui_image": image.source}), image.start, image.end
         )
     return result
+
+
+def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[PresentationSection, ...]:
+    """Redact one side for display, numbering each media kind across the whole side."""
+    totals: Counter[str] = Counter()
+    for section in sections:
+        totals.update(kind for kind in media_kinds(section.display_text) if kind != "math image")
+    seen: Counter[str] = Counter()
+    shown: list[PresentationSection] = []
+    for section in sections:
+        label = section.label
+        if label and section.label_is_content:
+            label = neutral_media_labels(Text(label), totals, seen).plain
+        elif label:
+            label = neutral_label_str(label)
+        source_label = neutral_label_str(section.source_label) if section.source_label else None
+        marked = neutral_media_labels(
+            _marked_text(section.text, section.underlines, section.furigana, section.images),
+            totals, seen,
+        )
+        underlines, furigana = annotations(marked)
+        shown.append(replace(
+            section, text=marked.plain, label=label, source_label=source_label,
+            underlines=underlines, furigana=furigana, images=_image_spans(marked),
+        ))
+    return tuple(shown)
+
+
+def display_presentation(presentation: CardPresentation) -> CardPresentation:
+    return replace(
+        presentation,
+        front=CardSide(neutral_side(presentation.front.sections)),
+        back=CardSide(neutral_side(presentation.back.sections)),
+    )
 
 
 def _unique_id(prefix: str, value: str, seen: dict[str, int]) -> str:

@@ -312,15 +312,18 @@ async def test_inline_picture_keeps_prompt_and_rating_visible_at_40x6(tmp_path) 
         front = rendered_text(review)
         assert front.count("Question") == 1
         assert front.count("after image") == 1
-        assert "[image: front.png]" in front
-        assert "[image: back.png]" not in front
+        assert front.count("[image]") == 1
+        assert review._visible_images == ("front.png",)
+        assert "front.png" not in front
         assert "[picture unavailable]" not in front
-        assert "[image:" not in rendered_card_row(review, 0)
+        assert "[image" not in rendered_card_row(review, 0)
         assert review.query_one("#card-scroll", VerticalScroll).region.height >= 3
 
         await pilot.press("enter")
         await pilot.pause()
-        assert "[image: back.png]" in rendered_text(review)
+        assert rendered_text(review).count("[image]") == 2
+        assert review._visible_images == ("front.png", "back.png")
+        assert "back.png" not in rendered_text(review)
         assert review.revealed
         assert review.query_one("#review-actions", Static).display
 
@@ -344,10 +347,11 @@ async def test_image_only_card_with_multiple_pictures_scrolls_at_40x6(tmp_path) 
         assert isinstance(review, ReviewScreen)
         await pilot.pause()
         card = rendered_text(review)
-        assert card.index("[image: one.png]") < card.index("[image: two.png]")
-        assert card.index("[image: two.png]") < card.index("[image: three.png]")
+        assert card.index("[image 1]") < card.index("[image 2]") < card.index("[image 3]")
+        assert review._visible_images == ("one.png", "two.png", "three.png")
+        assert "one.png" not in card
         assert "[picture unavailable]" not in card
-        assert "[image:" not in rendered_card_row(review, 0)
+        assert "[image" not in rendered_card_row(review, 0)
         scroller = review.query_one("#card-scroll", VerticalScroll)
         await pilot.press("G")
         await pilot.pause()
@@ -4807,3 +4811,71 @@ async def test_settings_navigation_stays_on_active_list_at_40x6(tmp_path, tab):
         assert view.index == min(1, len(view.children) - 1)
         await pilot.press("k")
         assert view.index == 0 and app.screen is settings
+
+
+def media_leak_card() -> RawCardContent:
+    return RawCardContent(
+        CardTemplateIdentity(910, "Media", 0, "Card 1"),
+        '<div>question</div><img src="front-SECRET.png" alt="SECRET]alt">'
+        '<img class="latex" src="latex-SECRET.png">',
+        '<div>question</div><hr id=answer><h2>[sound:head-SECRET.mp3] Meaning</h2>'
+        '<div>answer</div>'
+        '<img src="back-SECRET.png" title="SECRET-title">'
+        '<audio src="SECRET-tag.mp3">SECRET fallback</audio>[sound:SECRET-sound.mp3]',
+        front_av=(AVReference("audio", "SECRET-front.mp3"),),
+        back_av=(AVReference("audio", "SECRET-back.mp3"),),
+    )
+
+
+def visible_strings(screen) -> list[str]:
+    return [str(widget.render()) for widget in screen.query(Static)]
+
+
+@pytest.mark.asyncio
+async def test_no_media_name_reaches_any_screen_or_notice(tmp_path, monkeypatch) -> None:
+    plays: list[tuple] = []
+    notices: list[str] = []
+
+    class FakeAudioPlayer:
+        def __init__(self, report_error) -> None:
+            self.report_error = report_error
+
+        def play(self, paths) -> None:
+            plays.append(tuple(paths))
+            if paths:
+                self.report_error("Audio clip missing")
+
+        def stop(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(app_module, "CardAudioPlayer", FakeAudioPlayer)
+    original = app_module.ReviewScreen.notify
+    monkeypatch.setattr(
+        app_module.ReviewScreen, "notify",
+        lambda self, message, **kw: (
+            notices.append(str(message)), original(self, message, **kw)
+        )[1],
+    )
+    app, _ = make_app(tmp_path, media_leak_card())
+    async with app.run_test(size=(60, 24)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        await pilot.pause()
+        assert not [s for s in visible_strings(review) if "SECRET" in s]
+        await pilot.press("enter")
+        await pilot.pause()
+        text = rendered_text(review)
+        assert "SECRET" not in text
+        assert "[image" in text and "[audio" in text and "[math]" in text
+        assert review._visible_images
+        await pilot.press("p")
+        await pilot.pause()
+        await pilot.press("?")              # settings opens on the sections tab for a revealed card
+        await pilot.pause()
+        assert not [s for s in visible_strings(app.screen) if "SECRET" in s]
+    assert any("SECRET-back.mp3" in str(path) for call in plays for path in call)
+    assert not [n for n in notices if "SECRET" in n]

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from rich.style import Style
 from rich.text import Text
@@ -131,7 +131,8 @@ def normalise(text: Text, av: tuple[str, ...] = ()) -> Text:
 
     def sound(match: re.Match[str]) -> str:
         path = urlsplit(match.group(1).replace("\\", "/")).path
-        return f"[audio: {os.path.basename(path)}]"
+        name = quote(os.path.basename(path), safe="/:._-~()+,;=&'!$*@")
+        return f"[audio: {name}]" if name else "[audio]"
 
     text = substitute(text, re.compile(r"\[sound:([^\]]+)\]", re.I), sound)
     text = substitute(

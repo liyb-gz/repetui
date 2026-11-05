@@ -83,7 +83,7 @@ class CardAudioPlayer:
                 except OSError:
                     available = False
                 if not available:
-                    self._report_error(f"Audio file missing: {path.name}")
+                    self._report_error("Audio clip missing")
                     continue
                 starting = asyncio.create_task(
                     asyncio.create_subprocess_exec(
@@ -104,7 +104,7 @@ class CardAudioPlayer:
                         await self._reap_cancelled(process)
                     raise
                 except OSError:
-                    self._report_error(f"Could not start audio playback: {path.name}")
+                    self._report_error("Could not start audio playback")
                     continue
                 self._process = process
                 try:
@@ -118,4 +118,4 @@ class CardAudioPlayer:
                     if self._terminating is process:
                         self._terminating = None
                 if result:
-                    self._report_error(f"Could not play audio (format or output): {path.name}")
+                    self._report_error("Could not play audio (format or output)")

@@ -6,6 +6,9 @@ from repetui.presentation import (
     RawCardContent,
     SourceField,
     TemplateFieldProfile,
+    _field_is_present,
+    _render_document,
+    display_presentation,
     present_card,
 )
 
@@ -209,7 +212,7 @@ def test_represents_ruby_lists_tables_code_math_typed_answers_and_media() -> Non
     assert "A │ B" in card.back.text
     assert "if ready:\n    review()" in card.back.text
     assert "[math: x^2 + y^2]" in card.back.text
-    assert "[image: memory diagram]" in card.back.text
+    assert "[image: memory diagram diagram.png]" in card.back.text
     assert "[audio: voice.mp3]" in card.back.text
 
 
@@ -276,7 +279,8 @@ def test_resolves_indexed_anki_av_and_html_source_fallbacks() -> None:
 
     assert card.front.text == "[audio: front.mp3]"
     assert card.back.text == (
-        "[audio: 大人_b.mp3] [text to speech: ja_JP] [audio: spoken-answer.ogg]"
+        "[audio: %E5%A4%A7%E4%BA%BA_b.mp3] [text to speech: ja_JP] "
+        "[audio: spoken-answer.ogg%3Fcache=1]"
     )
 
 
@@ -304,7 +308,7 @@ def test_image_occurrences_keep_source_order_when_answer_repeats_question() -> N
     assert [image.source for image in front_section.images] == ["one%20pic.png", "two.png"]
     assert [image.source for image in back_section.images] == ["answer.png"]
     assert [front_section.text[image.start:image.end] for image in front_section.images] == [
-        "[image: first]", "[image: two.png]"
+        "[image: first one%2520pic.png]", "[image: two.png]"
     ]
     assert back_section.text[back_section.images[0].start:back_section.images[0].end] == (
         "[image: answer.png]"
@@ -335,7 +339,7 @@ def test_image_occurrences_follow_saved_field_profile_and_skip_hidden_html() -> 
 
 def test_latex_image_keeps_text_fallback_without_picture_reference() -> None:
     card = present_card(raw('<img class="latex" src="formula.png">', "answer"))
-    assert card.front.text == "[math: formula.png]"
+    assert card.front.text == "[math image: formula.png]"
     assert card.front.sections[0].images == ()
 
 
@@ -414,7 +418,7 @@ def test_exact_raw_front_removal_preserves_unlabelled_prelude_sections_and_audio
         "back:heading:reading-mnemonic",
     ]
     assert " ".join(card.back.text.split()) == (
-        "おとな adult [audio: 大人_b.mp3] "
+        "おとな adult [audio: %E5%A4%A7%E4%BA%BA_b.mp3] "
         "Meaning Mnemonic a grown person "
         "Reading Mnemonic おとな sounds like adult"
     )
@@ -468,7 +472,7 @@ def test_colon_terminated_underlined_headings_reconcile_as_label_sections() -> N
         "Adult おとな Type: Noun Kanji: 大, 人 (big, person) "
         "Meaning Explanation a grown person "
         "Reading Mnemonic おとな sounds grown-up "
-        "Context Example Adults study too. [audio: 大人_b.mp3]"
+        "Context Example Adults study too. [audio: %E5%A4%A7%E4%BA%BA_b.mp3]"
     )
 
 
@@ -540,7 +544,7 @@ def test_dynamic_template_falls_back_to_a_safe_suggested_field_profile() -> None
     ]
     assert card.back.text == (
         f"りょう\n\n• fishing\n\n漁をする\n\n{dictionary_entry.strip()}"
-        "\n\n[image: answer diagram]"
+        "\n\n[image: answer diagram answer.png]"
     )
     assert "Need help" not in card.front.text + card.back.text
     assert "View the card" not in card.front.text + card.back.text
@@ -659,3 +663,91 @@ def test_saved_profile_auto_includes_newly_populated_rendered_fields() -> None:
     )
     assert [section.source_label for section in ignored.back.sections] == ["Answer"]
     assert "new supporting detail" not in ignored.back.text
+
+
+def test_same_alt_different_source_is_different_media() -> None:
+    front = _render_document('<img src="a.png" alt="pic">')
+    assert _field_is_present(_render_document('<img src="a.png" alt="pic">'), front)
+    assert not _field_is_present(_render_document('<img src="b.png" alt="pic">'), front)
+    assert not _field_is_present(_render_document('<img src="dir2/a.png" alt="pic">'),
+                                 _render_document('<img src="dir1/a.png" alt="pic">'))
+    assert not _field_is_present(_render_document('<img src="a[1].png" alt="pic">'),
+                                 _render_document('<img src="a 1.png" alt="pic">'))
+    assert not _field_is_present(_render_document('<img src="a  b.png" alt="pic">'),
+                                 _render_document('<img src="a b.png" alt="pic">'))
+
+
+@pytest.mark.parametrize(
+    "sep", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_brackets_and_line_breaks_in_alt_cannot_escape_a_label(sep) -> None:
+    doc = _render_document(f'<img src="s.png" alt="x]SECRET{sep}more">')
+    assert "]SECRET" not in doc.text and doc.text.count("[") == doc.text.count("]") == 1
+
+
+def test_answer_image_survives_plain_front_stripping(monkeypatch) -> None:
+    import repetui.presentation as presentation_module
+    calls = []
+    real = presentation_module._strip_plain_front
+    monkeypatch.setattr(presentation_module, "_strip_plain_front",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    content = RawCardContent(
+        CardTemplateIdentity(911, "Pictures", 0, "Card 1"),
+        '<img src="a.png" alt="pic">',
+        # different HTML (wrapper + attribute order), same text prefix: forces the plain-text path
+        '<div><img alt="pic" src="a.png"></div><div><img src="b.png" alt="pic"></div>',
+    )
+    presentation = present_card(content)
+    assert calls, "fixture must exercise _strip_plain_front"
+    assert "b.png" in presentation.back.text
+    assert "b.png" not in presentation.front.text
+
+
+def test_same_alt_images_select_the_prompt_field_by_source() -> None:
+    card = present_card(raw(
+        """
+        <div class="template-help">Need help? Template version 1</div>
+        <script>prepare()</script>
+        <img src="front.png" alt="pic">
+        """,
+        """
+        <div class="template-help">Need help? Template version 1</div>
+        <img src="front.png" alt="pic">
+        <img src="answer.png" alt="pic">
+        <script>reveal()</script>
+        """,
+        SourceField("AnswerPicture", '<img src="answer.png" alt="pic">'),
+        SourceField("PromptPicture", '<img src="front.png" alt="pic">'),
+        SourceField("Note", "unused note"),
+    ))
+    assert card.suggested_profile is not None
+    assert card.suggested_profile.prompt_fields == ("PromptPicture",)
+    assert "answer.png" not in card.front.text
+
+
+def test_display_numbers_per_side_and_keeps_front_stable() -> None:
+    content = RawCardContent(
+        CardTemplateIdentity(912, "Audio", 0, "Card 1"),
+        "<div>q</div>[sound:f1.mp3][sound:f2.mp3]",
+        "<div>q</div><hr id=answer><div>a</div>[sound:b1.mp3]",
+    )
+    shown = display_presentation(present_card(content))
+    assert "[audio 1]" in shown.front.text and "[audio 2]" in shown.front.text
+    assert "[audio]" in shown.back.text and "b1.mp3" not in shown.back.text
+    assert "f1.mp3" not in shown.front.text
+
+
+def test_display_redaction_keeps_underline_furigana_and_image_offsets() -> None:
+    card = present_card(raw(
+        '[sound:long-name.mp3] <u>猫</u> <img src="p q.png" alt="alt"> 犬[いぬ] [sound:b.mp3]',
+        "<hr id=answer>a",
+    ))
+    shown = display_presentation(card).front.sections[0]
+    assert shown.text == "[audio 1] 猫 [image] 犬 [audio 2]"
+    assert [shown.text[start:end] for start, end in shown.underlines] == ["猫"]
+    assert [(shown.text[start:end], reading) for start, end, reading in shown.furigana] == [
+        ("犬", "いぬ")
+    ]
+    assert [(shown.text[i.start:i.end], i.source) for i in shown.images] == [
+        ("[image]", "p q.png")
+    ]

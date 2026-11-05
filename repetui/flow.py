@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from rich.cells import cell_len
 from rich.style import Style
@@ -15,7 +15,12 @@ from .card_text import strip as _strip_text
 from .card_text import substitute as _replace_text
 from .controls import ReviewAction, ReviewControls
 from .preferences import AnswerLayout, Preferences, SectionMode
-from .presentation import CardPresentation, PresentationSection
+from .presentation import (
+    CardPresentation,
+    PresentationSection,
+    display_presentation,
+    neutral_side,
+)
 
 _TYPE_ANSWER_MARKER = "[type answer]"
 _BLOCK_BREAK = re.compile(r"\n\s*\n")
@@ -364,6 +369,13 @@ def compose_review(
     media_active: bool = False,
 ) -> Text:
     """Compose the complete visible review document without mutating state."""
+    presentation = display_presentation(presentation)
+    if sections:
+        redacted = neutral_side(tuple(state.section for state in sections))
+        sections = tuple(
+            replace(state, section=section)
+            for state, section in zip(sections, redacted, strict=True)
+        )
     result = _header(
         presentation, deck_name, counts, width, current_queue, show_readings, media_active
     )

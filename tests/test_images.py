@@ -29,6 +29,14 @@ def picture(path: Path) -> None:
     image.save(path)
 
 
+def image_sources(text) -> list[str]:
+    return [
+        source
+        for span in sorted(text.spans, key=lambda marked: marked.start)
+        if isinstance(source := getattr(span.style, "meta", {}).get("repetui_image"), str)
+    ]
+
+
 def review(front: str, back: str = "answer", *, revealed: bool = False):
     card = present_card(RawCardContent(
         CardTemplateIdentity(1, "Pictures", 0, "Card"), front, back,
@@ -83,10 +91,12 @@ def test_encoded_names_and_multiple_images_preserve_surrounding_text(tmp_path: P
 
     result = expand_image_previews(document, backend.media_path, 40, 3)
 
-    assert result.plain.index("Before") < result.plain.index("[image: one%20%23%20pic.png]")
-    assert result.plain.index("[image: one%20%23%20pic.png]") < result.plain.index("between")
-    assert result.plain.index("between") < result.plain.index("[image: two.png]")
-    assert result.plain.index("[image: two.png]") < result.plain.index("after")
+    assert result.plain.index("Before") < result.plain.index("[image 1]")
+    assert result.plain.index("[image 1]") < result.plain.index("between")
+    assert result.plain.index("between") < result.plain.index("[image 2]")
+    assert result.plain.index("[image 2]") < result.plain.index("after")
+    assert image_sources(result) == ["one%20%23%20pic.png", "two.png"]
+    assert "pic.png" not in result.plain and "two.png" not in result.plain
     assert "[picture unavailable]" not in result.plain
     assert sum(bool(getattr(span.style, "bgcolor", None)) for span in result.spans) > 4
 
@@ -166,6 +176,8 @@ def test_answer_picture_is_inserted_only_after_reveal(tmp_path: Path) -> None:
     hidden = expand_image_previews(review(front, back), backend.media_path, 40, 3)
     shown = expand_image_previews(review(front, back, revealed=True), backend.media_path, 40, 3)
 
-    assert "[image: back.png]" not in hidden.plain
-    assert "[image: back.png]" in shown.plain
+    assert image_sources(hidden) == ["front.png"]
+    assert image_sources(shown) == ["front.png", "back.png"]
+    assert hidden.plain.count("[image]") == 1
+    assert shown.plain.count("[image]") == 2  # one picture per side: each side numbers alone
     assert shown.plain.count("[picture unavailable]") == 0

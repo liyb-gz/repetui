@@ -288,7 +288,9 @@ def test_review_uses_anki_rendering_and_scheduler() -> None:
 
     assert card is not None
     assert card.presentation.front.text == "front"
-    assert card.presentation.back.text == ("back [audio: 大人_b.mp3] [text to speech: ja_JP]")
+    assert card.presentation.back.text == (
+        "back [audio: %E5%A4%A7%E4%BA%BA_b.mp3] [text to speech: ja_JP]"
+    )
     assert card.identity.note_type_id == 123
     assert card.identity.note_type_name == "Basic"
     assert card.identity.template_ordinal == 0

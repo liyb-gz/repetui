@@ -63,6 +63,7 @@ from .images import (
     resolve_local_image,
 )
 from .lifecycle import CollectionLifecycle, SyncRunResult
+from .media_labels import neutral_label_str
 from .media_sync import MediaSyncSnapshot, MediaSyncStatus, MediaSyncTask
 from .native_images import NativeImageOverlay, NativePicture, mark_native_picture, overlay_for_app
 from .preferences import (
@@ -632,7 +633,7 @@ class SectionSettingItem(RepetuiListItem):
         self, preferences: Preferences, identity: CardTemplateIdentity
     ) -> None:
         mode = preferences.mode(identity, self.section.id)
-        label = section_name(self.section)
+        label = neutral_label_str(section_name(self.section))
         colour = {
             SectionMode.SHOW: "#79c98b",
             SectionMode.FOLD: "#d7b85a",
@@ -1917,7 +1918,7 @@ class ReviewScreen(NativeImageScreen):
 
     def _audio_error(self, message: str) -> None:
         if self.is_mounted:
-            if self.repetui.media_downloading and message.startswith("Audio file missing:"):
+            if self.repetui.media_downloading and message == "Audio clip missing":
                 key = self.repetui.review_controls.binding(ReviewAction.REPLAY_AUDIO)
                 hint = f"{key} replays when ready." if key else "Replay when ready."
                 message = f"Audio still downloading; {hint}"
@@ -1937,7 +1938,7 @@ class ReviewScreen(NativeImageScreen):
             try:
                 paths.append(self.repetui.backend.media_path(reference.label))
             except (ValueError, BackendError):
-                self._audio_error(f"Could not locate card audio: {reference.label}")
+                self._audio_error("Could not locate card audio")
         if replay and not paths:
             self.notify("No recorded sound on this side.")
         self._audio.play(paths)

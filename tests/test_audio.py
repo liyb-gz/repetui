@@ -66,8 +66,8 @@ async def test_clips_play_in_order_and_missing_or_failed_clips_do_not_stop_revie
         "start first.wav", "start fail.wav", "start second.wav"
     ]
     assert errors == [
-        "Audio file missing: missing.wav",
-        "Could not play audio (format or output): fail.wav",
+        "Audio clip missing",
+        "Could not play audio (format or output)",
     ]
 
 
@@ -109,7 +109,7 @@ async def test_unavailable_player_is_a_nonfatal_error(tmp_path) -> None:
     assert player._task is not None
     await player._task
 
-    assert errors == ["Could not start audio playback: clip.wav"]
+    assert errors == ["Could not start audio playback"]
 
 
 @pytest.mark.asyncio
