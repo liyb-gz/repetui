@@ -169,6 +169,15 @@ CORPUS = [
 ]
 
 FORBIDDEN = ("SECRET",)
+# Shapes where the card author also prints the bare word as visible text. That word is card content
+# (language decks name audio after the answer word), so only file-like forms are forbidden there.
+AUTHOR_WORD = {
+    "plain mention of SECRET.mp3 and SECRET [sound:SECRET.mp3]",
+    "<h2>[sound:SECRET.mp3] SECRET:</h2>body",
+    "<u><b>SECRET</b></u> [sound:SECRET.mp3]",
+    '<ruby>SECRET<rt>SECRET.mp3</rt></ruby><img src="SECRET.mp3">',
+}
+FILE_FORMS = ("SECRET.", "SECRET%", "/SECRET")
 
 
 def _outputs(content: RawCardContent) -> list[str]:
@@ -201,16 +210,18 @@ def test_no_media_name_reaches_any_display_output(shape) -> None:
     ]
     fields = (SourceField("Front", f"q {shape}"), SourceField("Back", f"a {shape}"))
     contents.append(raw(f"q {shape}", f"<hr id=answer>a {shape}", *fields))
+    forbidden = FILE_FORMS if shape in AUTHOR_WORD else FORBIDDEN
     for content in contents:
         for output in _outputs(content):
-            for secret in FORBIDDEN:
+            for secret in forbidden:
                 assert secret not in output, (shape, output)
     # the field-setup preview renders the saved profile
     profile = TemplateFieldProfile(("Front",), ("Back",))
     preview = present_card(raw("x", "<hr id=answer>y", *fields), profile)
     for revealed in (True, False):
         flow = compose_review(preview, "D", DueCounts(1, 0, 0), 60, revealed=revealed).plain
-        assert "SECRET" not in flow, (shape, flow)
+        for secret in forbidden:
+            assert secret not in flow, (shape, flow)
 
 
 def test_scrub_keeps_playback_identities_real() -> None:
@@ -238,8 +249,16 @@ def test_scrub_never_touches_ordinary_words_or_short_stems() -> None:
     assert shown.text == "[image] cat and image and audio Elephant [audio] posted"
 
 
-def test_scrub_replaces_a_leaked_name_with_media() -> None:
+def test_scrub_replaces_a_leaked_file_name_but_keeps_the_bare_word() -> None:
     shown = display_presentation(present_card(raw(
         "see SECRET.mp3 or SECRET [sound:SECRET.mp3]", "<hr id=answer>a"
     ))).front
-    assert shown.text == "see [media] or [media] [audio]"
+    assert shown.text == "see [media] or SECRET [audio]"
+
+
+def test_answer_word_named_like_its_audio_still_shows() -> None:
+    # Language decks often name the audio after the answer word: the word itself must stay.
+    shown = display_presentation(present_card(raw(
+        "<div>Q</div>", "<hr id=answer><div>hallo [sound:hallo.mp3]</div>"
+    ))).back
+    assert "hallo [audio]" in "".join(section.text for section in shown.sections)

@@ -2,11 +2,12 @@
 its raw HTML or text is scrubbed from all display text, whatever the parser made of the markup.
 
 Names come from the attributes src, href, srcset (each URL), data and poster, from CSS url(...),
-and from [sound:...]. For each reference, the full value, the percent-decoded value, the basename
-and the basename without its extension are hidden. Names that contain ".", "/" or "%" are matched
-anywhere. Other names (stems) are matched only as whole words, and stems shorter than 4 characters
-are ignored, so ordinary short words are never scrubbed. Neutral labels such as `[audio 2]` are
-never touched. Playback identities (ImageSpan.source, AV labels) are not display text and stay real.
+and from [sound:...]. For each reference, the full value, the percent-decoded value and the
+basename are hidden, but only names that contain ".", "/" or "%". A bare word (a file's stem, or a
+name without an extension) is never scrubbed: language decks often name audio after the answer
+word (hallo.mp3), and that word must still show where the card itself prints it. Neutral labels
+such as `[audio 2]` are never touched. Playback identities (ImageSpan.source, AV labels) are not
+display text and stay real.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from rich.text import Text
 from .card_text import substitute
 
 SCRUBBED = "[media]"
-MIN_STEM = 4
 
 _ATTRIBUTE = re.compile(
     r"""(?<![\w])(src|href|srcset|data|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
@@ -69,17 +69,13 @@ def media_names(sources: Iterable[str], extra: Iterable[str] = ()) -> frozenset[
             base = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             if kind == "href" and not _EXTENSION.search(base):
                 continue  # a link to a page, not a media file: never scrub its words
-            stem = _EXTENSION.sub("", base)
-            names.update((form, base, stem))
+            names.update((form, base))
     return frozenset(name for name in names if _hideable(name))
 
 
-def _strong(name: str) -> bool:
-    return any(mark in name for mark in "./%")
-
-
 def _hideable(name: str) -> bool:
-    return bool(name.strip()) and (len(name) >= MIN_STEM)
+    """Only file-like names: a bare word is card content, not a leaked file name."""
+    return bool(name.strip()) and any(mark in name for mark in "./%")
 
 
 @lru_cache(maxsize=256)
@@ -87,10 +83,8 @@ def _pattern(names: frozenset[str]) -> re.Pattern[str] | None:
     if not names:
         return None
     ordered = sorted(names, key=lambda name: (-len(name), name))
-    strong = [re.escape(name) for name in ordered if _strong(name)]
-    weak = [re.escape(name) for name in ordered if not _strong(name)]
-    alternatives = strong + ([rf"(?<!\w)(?:{'|'.join(weak)})(?!\w)"] if weak else [])
-    return re.compile(rf"(?P<keep>{_KEEP})|(?:{'|'.join(alternatives)})")
+    alternatives = "|".join(re.escape(name) for name in ordered)
+    return re.compile(rf"(?P<keep>{_KEEP})|(?:{alternatives})")
 
 
 def _replacement(match: re.Match[str]) -> str:
