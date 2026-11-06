@@ -100,8 +100,8 @@ The Controls tab also holds three profile-scoped settings:
 With **Sync on quit** On, `q` syncs your reviews first and quits when the sync
 succeeds. If the sync fails, `q` shows “Not synced” and a second `q` quits
 anyway. Ask prompts `Sync? y yes · n no · esc stay`; Off quits at once.
-Nothing is synced on quit when you have not reviewed anything since the last
-sync.
+Nothing is synced on quit when you have not reviewed anything this session since
+the last sync.
 
 ### Notifications
 
@@ -173,10 +173,12 @@ warning and leaves review usable. Media file names are never shown: sound and
 pictures appear as `[audio]` and `[image]`, numbered per card side
 (`[audio 1]`, `[audio 2]`) when a side has more than one.
 
-Local raster pictures appear as colored-character previews within the card.
-On a direct Kitty terminal, or a supported direct WezTerm version, Repetui also
-paints native pixels over those previews and the enlarged view using Kitty
-graphics placements. The characters remain visible if the terminal does not
+When images are on (**Images at start** is Off by default; `i` turns them on for
+the session), local raster pictures appear as colored-character previews within
+the card. With images off, each picture shows only its `[image]` label, and `v`
+still opens the enlarged view. On a direct Kitty terminal, or a supported
+direct WezTerm version, Repetui also paints native pixels over those previews
+and the enlarged view using Kitty graphics placements. The characters remain visible if the terminal does not
 show graphics or writing them fails. Native output is off by default inside
 terminal multiplexers, including Herdr, because graphics forwarding varies;
 set `REPETUI_NATIVE_IMAGES=kitty` to opt in when forwarding is configured, or
