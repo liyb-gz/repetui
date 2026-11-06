@@ -583,10 +583,41 @@ def _without_inline_furigana(text: str) -> str:
     return INLINE_FURIGANA.sub(lambda match: match.group("base"), text)
 
 
+class _StartTags(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tags: list[tuple[str, dict[str, str | None]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.tags.append((tag.lower(), dict(attrs)))
+
+
+def _suppresses(fragment: str) -> bool:
+    """Does any start tag in `fragment` hide its content (hidden, aria-hidden, display:none...)?"""
+    collector = _StartTags()
+    collector.feed(fragment)
+    collector.close()
+    return any(
+        tag in _RenderedHTMLParser._SUPPRESSED or _RenderedHTMLParser._is_hidden(attributes)
+        for tag, attributes in collector.tags
+    )
+
+
 def _promote_structural_labels(html: str) -> str:
-    html = _UNDERLINED_HEADING.sub(lambda match: f"<h6>{match.group('label')}</h6>", html)
+    """Rewrite visible bold/underlined labels as structural tags. A label whose markup hides it
+    is left as it is, so the rewrite can never drop a suppression attribute."""
+
+    def promote(match: re.Match[str], promoted: str) -> str:
+        return match.group() if _suppresses(match.group()) else promoted
+
+    html = _UNDERLINED_HEADING.sub(
+        lambda match: promote(match, f"<h6>{match.group('label')}</h6>"), html
+    )
     return _INLINE_LABEL.sub(
-        lambda match: f"<repetui-label>{match.group('label')}:</repetui-label>", html
+        lambda match: promote(
+            match, f"<repetui-label>{match.group('label')}:</repetui-label>"
+        ),
+        html,
     )
 
 

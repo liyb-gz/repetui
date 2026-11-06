@@ -338,3 +338,28 @@ def test_settings_label_never_shows_a_transformed_file_name() -> None:
         "q", "<hr id=answer><h2>SECRET_FILE.mp3</h2>body [sound:SECRET_FILE.mp3]"
     ))
     assert [display_section_name(section) for section in card.back.sections][0] == "[media]"
+
+
+@pytest.mark.parametrize("html", [
+    "<ruby>Q<rt><b hidden>PRIVATE:</b>よみ</rt></ruby>",
+    "<b hidden>PRIVATE:</b> body",
+    '<b style="display: none">PRIVATE:</b> body',
+    "<u hidden><b>PRIVATE</b></u> body",
+    '<u><span aria-hidden="true"><b>PRIVATE</b></span></u> body',
+    '<u><b class="hidden">PRIVATE</b></u> body',
+])
+def test_structural_label_promotion_keeps_suppression(html) -> None:
+    from repetui.presentation import _render_document
+
+    doc = _render_document(html)
+    assert "PRIVATE" not in doc.text
+    assert "PRIVATE" not in " ".join(r for _, _, r in doc.furigana)
+    assert all("PRIVATE" not in label.plain for _, label, _ in doc.structural_sections)
+
+
+def test_visible_labels_are_still_promoted() -> None:
+    from repetui.presentation import _render_document
+
+    assert [kind for kind, _, _ in _render_document("<b>Meaning:</b> x").structural_sections] == [
+        "label"]
+
