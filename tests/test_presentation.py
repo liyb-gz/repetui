@@ -829,3 +829,65 @@ def test_visible_heading_labels_share_the_side_numbering() -> None:
     ).plain
     assert "▾ [audio 1] Meaning\nbody [audio 2]" in flow
     assert "[audio 3]" in flow and "[audio]" not in flow
+
+
+_RUBY_MEDIA = [
+    "<ruby>Q<rt>[sound:SECRET.mp3]</rt></ruby>",
+    '<ruby>Q<rt><audio src="SECRET.mp3" title="TITLE">FALLBACK</audio></rt></ruby>',
+    '<ruby>Q<rt><video src="SECRET.mp4"><source src="SECRET.webm">FALLBACK</video></rt></ruby>',
+    '<ruby>Q<rt><img src="SECRET.png" alt="ALT" title="TITLE"></rt></ruby>',
+    "<ruby>Q<rt>よみ<audio src=SECRET.mp3>FALLBACK</audio></rt></ruby>",
+    "<ruby><rt>[sound:SECRET.mp3]<audio src=SECRET.mp3>FALLBACK</audio></rt></ruby>",
+]
+
+
+@pytest.mark.parametrize("readings", [True, False])
+@pytest.mark.parametrize("html", _RUBY_MEDIA)
+def test_media_inside_ruby_readings_never_shows_names_or_fallback(html, readings) -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    card = present_card(raw(f"<div>{html}</div>", f"<hr id=answer><div>A {html}</div>"))
+    shown = display_presentation(card)
+    for side in (shown.front, shown.back):
+        for section in side.sections:
+            metadata = " ".join(reading for _, _, reading in section.furigana)
+            for secret in ("SECRET", "FALLBACK", "ALT", "TITLE"):
+                assert secret not in metadata
+                assert secret not in section.text
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=True, show_readings=readings
+    ).plain
+    for secret in ("SECRET", "FALLBACK", "ALT", "TITLE"):
+        assert secret not in flow
+
+
+def test_media_inside_ruby_readings_keeps_real_identity_and_neutral_reading() -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    card = present_card(raw('<ruby>Q<rt><audio src="SECRET.mp3">FALLBACK</audio></rt></ruby>',
+                            "<hr id=answer>a"))
+    # Identity (for inference) keeps the real source; only the display is neutral.
+    assert card.front.sections[0].furigana == ((0, 1, "[audio: SECRET.mp3]"),)
+    shown = display_presentation(card).front.sections[0]
+    assert shown.furigana == ((0, 1, "[audio]"),)
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=False, show_readings=True
+    ).plain
+    assert "Q[[audio]]" in flow
+
+
+def test_indexed_av_inside_ruby_reading_uses_its_neutral_placeholder() -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    card = present_card(RawCardContent(
+        IDENTITY, "<ruby>Q<rt>[anki:play:q:0]</rt></ruby>", "<hr id=answer>a",
+        front_av=(AVReference("audio", "SECRET.mp3"),),
+    ))
+    assert card.front.sections[0].furigana == ((0, 1, "[audio: SECRET.mp3]"),)
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=False, show_readings=True
+    ).plain
+    assert "SECRET" not in flow and "anki:play" not in flow

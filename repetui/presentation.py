@@ -181,6 +181,7 @@ class _MediaCapture:
     kind: str
     depth: int
     sources: list[str] = dataclass_field(default_factory=list)
+    reading: _RubyCapture | None = None  # inside <rt>: its label joins the reading
 
 
 @dataclass
@@ -233,8 +234,13 @@ class _RenderedHTMLParser(HTMLParser):
         "wbr",
     }
 
-    def __init__(self, underline_classes: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        underline_classes: frozenset[str] = frozenset(),
+        av: tuple[AVReference, ...] = (),
+    ) -> None:
         super().__init__(convert_charrefs=True)
+        self._av = av
         self.parts: list[str] = []
         self.sections: list[_RawSection] = []
         self._active: _RawSection | None = None
@@ -324,6 +330,17 @@ class _RenderedHTMLParser(HTMLParser):
         if ruby is not None and ruby.rt_depth:
             if tag not in self._VOID:
                 ruby.rt_depth += 1
+            # Media inside a reading keeps its identity label; display redacts it later.
+            if tag in {"audio", "video"}:
+                source = attributes.get("src")
+                self._media = _MediaCapture(
+                    tag, len(self._underline_stack), [_source_id(source)] if source else [],
+                    ruby,
+                )
+            elif tag == "img":
+                label = _source_id(attributes.get("src") or "")
+                kind = "math image" if "latex" in self._classes(attributes) else "image"
+                ruby.reading_parts.append(f"[{kind}: {label}]" if label else f"[{kind}]")
             return
         if ruby is not None and ruby.rp_depth:
             if tag not in self._VOID:
@@ -430,7 +447,7 @@ class _RenderedHTMLParser(HTMLParser):
         if ruby is not None and ruby.rt_depth:
             ruby.rt_depth -= 1
             if not ruby.rt_depth:
-                reading = _normalise("".join(ruby.reading_parts))
+                reading = _normalise("".join(ruby.reading_parts), self._av)
                 if reading and ruby.base_start < ruby.rt_base_end:
                     self.ruby_ranges.append(
                         (ruby.base_start, ruby.rt_base_end, reading)
@@ -464,7 +481,11 @@ class _RenderedHTMLParser(HTMLParser):
         media, self._media = self._media, None
         if media is not None:
             label = " ".join(media.sources)
-            self._emit(f"[{media.kind}: {label}]" if label else f"[{media.kind}]")
+            label = f"[{media.kind}: {label}]" if label else f"[{media.kind}]"
+            if media.reading is not None:
+                media.reading.reading_parts.append(label)
+            else:
+                self._emit(label)
 
     def close(self) -> None:
         super().close()
@@ -555,7 +576,7 @@ def _render_document(
     *,
     card_css: str = "",
 ) -> _RenderedDocument:
-    parser = _RenderedHTMLParser(_underlined_classes(card_css))
+    parser = _RenderedHTMLParser(_underlined_classes(card_css), av)
     parser.feed(_promote_structural_labels(html))
     parser.close()
     raw_text = "".join(parser.parts)
@@ -697,6 +718,10 @@ def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[Presentatio
             totals, seen,
         )
         underlines, furigana = annotations(marked)
+        # Readings are display text too: media inside <rt> shows only its neutral label.
+        furigana = tuple(
+            (start, end, neutral_label_str(reading)) for start, end, reading in furigana
+        )
         shown.append(replace(
             section, text=marked.plain, label=label, source_label=source_label,
             underlines=underlines, furigana=furigana, images=_image_spans(marked),
