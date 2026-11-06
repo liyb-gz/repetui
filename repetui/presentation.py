@@ -192,21 +192,46 @@ class _MediaCapture:
     """One open <audio>/<video> element: its identity is every source inside it."""
 
     kind: str
-    depth: int
     sources: list[str] = dataclass_field(default_factory=list)
 
 
 @dataclass
 class _RubyCapture:
     base_start: int
-    rt_depth: int = 0  # open-element depth of the current <rt>; 0 = not inside one
-    rp_depth: int = 0
     rt_base_end: int = 0
     reading_parts: list[str] = dataclass_field(default_factory=list)
 
 
+@dataclass
+class _Frame:
+    """One open element and the one effect it started; closing it undoes exactly that.
+
+    Effects: "suppress" (hidden, script, svg, object ...: nothing inside is shown), "media"
+    (<audio>/<video>: only source identities are collected), "math" (content buffered, then shown
+    as [math: ...] unless it is only media), "rt" (a reading: content buffered into it), "ruby",
+    "rp", "pre", "heading", "label", or "" (no effect).
+    """
+
+    tag: str
+    effect: str = ""
+    underlined: bool = False
+    close_text: str = ""
+    ruby: _RubyCapture | None = None
+    sink: list[str] | None = None
+
+
+_ONLY_MEDIA = re.compile(r"(?:\s*\[(?:audio|image|video|math image)(?:: [^\[\]\n]*)?\])+\s*")
+
+
 class _RenderedHTMLParser(HTMLParser):
-    """Render readable text while retaining safe structural section hints."""
+    """Render readable text while retaining safe structural section hints.
+
+    All parser state lives on one stack of open elements (`_Frame`). An end tag closes only a
+    matching open element (and anything left open inside it); an unmatched end tag closes
+    nothing, so it can never end suppression, a reading or math early. Content is the same
+    wherever it appears: inside a reading or math it takes exactly the body's path, and only the
+    output is buffered (`_sinks`).
+    """
 
     _BLOCKS = {
         "address",
@@ -230,7 +255,9 @@ class _RenderedHTMLParser(HTMLParser):
         "ul",
     }
     _HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
-    _SUPPRESSED = {"script", "style", "template"}
+    # Never rendered, or rendered only when the real content cannot be (fallback content).
+    _SUPPRESSED = {"script", "style", "template", "object", "iframe", "noscript", "title"}
+    _STRUCTURE = {"ruby", "rt", "rp", "repetui-label"} | _HEADINGS
     _VOID = {
         "area",
         "base",
@@ -256,28 +283,23 @@ class _RenderedHTMLParser(HTMLParser):
         self.parts: list[str] = []
         self.sections: list[_RawSection] = []
         self._active: _RawSection | None = None
-        self._heading_depth = 0
-        self._ignored_depth = 0
-        self._pre_depth = 0
-        self._math_tag: str | None = None
-        self._math_nested_depth = 0
+        self._stack: list[_Frame] = []
+        self._effects: Counter[str] = Counter()
+        self._underline_depth = 0
+        self._sinks: list[list[str]] = []
         self._media: _MediaCapture | None = None
+        self._reading: _RubyCapture | None = None
+        self._ruby_stack: list[_RubyCapture] = []
         self._row_cells = 0
         self._underline_classes = underline_classes
-        self._underline_depth = 0
-        self._underline_stack: list[tuple[str, bool]] = []
         self._raw_length = 0
         self.underline_ranges: list[tuple[int, int]] = []
-        self._ruby_stack: list[_RubyCapture] = []
-        # The <rt> being read. Its content takes the same path as the body (suppression, media
-        # identity labels, math, hidden content); only _emit redirects the text into the reading.
-        self._reading: _RubyCapture | None = None
         self.ruby_ranges: list[tuple[int, int, str]] = []
         self.image_ranges: list[ImageSpan] = []
 
     def _emit(self, text: str) -> None:
-        if self._reading is not None:
-            self._reading.reading_parts.append(text)
+        if self._sinks:
+            self._sinks[-1].append(text)  # buffered into the open reading or math
             return
         start = self._raw_length
         self._raw_length += len(text)
@@ -290,7 +312,7 @@ class _RenderedHTMLParser(HTMLParser):
         self.parts.append(text)
         if self._active is not None:
             self._active.end = self._raw_length
-            if self._heading_depth:
+            if self._effects["heading"] or self._effects["label"]:
                 self._active.label_end = self._raw_length
 
     @staticmethod
@@ -299,197 +321,177 @@ class _RenderedHTMLParser(HTMLParser):
 
     @staticmethod
     def _is_hidden(attributes: dict[str, str | None]) -> bool:
-        style = (attributes.get("style") or "").casefold().replace(" ", "")
+        style = re.sub(r"\s+", "", attributes.get("style") or "").casefold()
         classes = set((attributes.get("class") or "").casefold().split())
+        aria = attributes.get("aria-hidden")
         return (
             "hidden" in attributes
             or "hidden" in classes
-            or attributes.get("aria-hidden", "").lower() == "true"
+            # a bare aria-hidden (or any value but "false") hides, as browsers treat it
+            or ("aria-hidden" in attributes and (aria or "").strip().casefold() != "false")
             or "display:none" in style
             or "visibility:hidden" in style
         )
 
+    def _push(self, frame: _Frame) -> None:
+        self._stack.append(frame)
+        self._effects[frame.effect] += 1
+        self._underline_depth += int(frame.underlined)
+        if frame.sink is not None:
+            self._sinks.append(frame.sink)
+
+    def _pop(self) -> None:
+        frame = self._stack.pop()
+        self._effects[frame.effect] -= 1
+        self._underline_depth -= int(frame.underlined)
+        if frame.sink is not None:
+            self._sinks.pop()
+        if frame.effect == "media":
+            self._flush_media()
+        elif frame.effect == "math":
+            content = "".join(frame.sink or ())
+            # Media inside math is media: never wrap its label (or anything) as an expression.
+            self._emit(content.strip() if _ONLY_MEDIA.fullmatch(content) else f"[math: {content}]")
+        elif frame.effect == "rt" and frame.ruby is not None:
+            self._reading = None
+            self._finish_reading(frame.ruby)
+        elif frame.effect == "ruby" and self._ruby_stack:
+            self._ruby_stack.pop()
+        if frame.close_text:
+            self._emit(frame.close_text)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attributes = dict(attrs)
-        if tag not in self._VOID:
-            active = (
-                not self._ignored_depth
-                and self._math_tag is None
-                and tag not in self._SUPPRESSED
-                and not self._is_hidden(attributes)
-            )
-            underlined = active and (
-                tag in {"u", "ins"}
-                or _declares_underline(attributes.get("style") or "") is True
-                or bool(self._classes(attributes) & self._underline_classes)
-            )
-            self._underline_stack.append((tag, underlined))
-            self._underline_depth += int(underlined)
-        if self._media is not None:
+        frame = None if tag in self._VOID else _Frame(tag)
+        if self._effects["media"]:
             # Nothing inside a media element is shown; nested sources join its identity.
-            if tag in {"audio", "video", "source"} and (source := attributes.get("src")):
+            if self._media is not None and tag in {"audio", "video", "source"} and (
+                source := attributes.get("src")
+            ):
                 self._media.sources.append(_source_id(source))
+            if frame is not None:
+                self._push(frame)
             return
-        if self._ignored_depth:
-            if tag not in self._VOID:
-                self._ignored_depth += 1
+        if self._effects["suppress"] or (self._reading is None and self._effects["rp"]):
+            if frame is not None:
+                self._push(frame)
             return
         if tag in self._SUPPRESSED or self._is_hidden(attributes):
-            if tag not in self._VOID:
-                self._ignored_depth = 1
+            if frame is not None:
+                frame.effect = "suppress"
+                self._push(frame)
             return
-        if self._math_tag is not None:
-            if tag not in self._VOID:
-                self._math_nested_depth += 1
+        if self._sinks and tag in self._STRUCTURE:
+            if frame is not None:
+                self._push(frame)  # structure inside a reading or math is only text
             return
-
         ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if self._reading is not None:
-            if tag in {"ruby", "rt", "rp", "repetui-label"} or tag in self._HEADINGS:
-                return  # structure inside a reading is only text
-        else:
-            if ruby is not None and ruby.rp_depth:
-                if tag not in self._VOID:
-                    ruby.rp_depth += 1
-                return
-            if tag == "ruby":
-                self._ruby_stack.append(_RubyCapture(self._raw_length))
-                return
-            if ruby is not None and tag == "rt":
-                ruby.rt_base_end = self._raw_length
-                ruby.rt_depth = len(self._underline_stack)  # includes this <rt>
-                ruby.reading_parts.clear()
-                self._reading = ruby
-                return
-            if ruby is not None and tag == "rp":
-                ruby.rp_depth = 1
-                return
+        if tag == "ruby" and frame is not None:
+            capture = _RubyCapture(self._raw_length)
+            self._ruby_stack.append(capture)
+            frame.effect, frame.ruby = "ruby", capture
+            self._push(frame)
+            return
+        if ruby is not None and tag == "rt" and frame is not None:
+            ruby.rt_base_end = self._raw_length
+            ruby.reading_parts = []
+            frame.effect, frame.ruby, frame.sink = "rt", ruby, ruby.reading_parts
+            self._reading = ruby
+            self._push(frame)
+            return
+        if ruby is not None and tag == "rp" and frame is not None:
+            frame.effect = "rp"
+            self._push(frame)
+            return
 
         classes = self._classes(attributes)
-        if tag == "svg":
+        if frame is not None:
+            frame.underlined = (
+                tag in {"u", "ins"}
+                or _declares_underline(attributes.get("style") or "") is True
+                or bool(classes & self._underline_classes)
+            )
+        if tag == "svg" and frame is not None:
             self._emit("[math]" if "latex" in classes else "[image]")
-            self._ignored_depth = 1
-        elif tag in self._HEADINGS:
+            frame.effect = "suppress"
+        elif tag in self._HEADINGS and frame is not None:
             self._emit("\n")
             self._active = _RawSection(
                 "heading", self._raw_length, self._raw_length, self._raw_length
             )
             self.sections.append(self._active)
-            self._heading_depth = 1
-        elif tag == "repetui-label":
+            frame.effect, frame.close_text = "heading", "\n"
+        elif tag == "repetui-label" and frame is not None:
             self._active = _RawSection(
                 "label", self._raw_length, self._raw_length, self._raw_length
             )
             self.sections.append(self._active)
-            self._heading_depth = 1
+            frame.effect = "label"
         elif tag == "br":
             self._emit("\n")
         elif tag == "hr":
             self._emit("\n────────\n")
         elif tag == "li":
             self._emit("\n• ")
-        elif tag == "tr":
+        elif tag == "tr" and frame is not None:
             self._row_cells = 0
             self._emit("\n")
+            frame.close_text = "\n"
         elif tag in {"td", "th"}:
             if self._row_cells:
                 self._emit(" │ ")
             self._row_cells += 1
-        elif tag == "rt":
+        elif tag == "rt" and frame is not None:
             self._emit("（")
-        elif tag == "pre":
-            self._pre_depth += 1
+            frame.close_text = "）"
+        elif tag == "pre" and frame is not None:
             self._emit("\n```text\n")
-        elif tag == "code" and not self._pre_depth:
+            frame.effect, frame.close_text = "pre", "\n```\n"
+        elif tag == "code" and frame is not None and not self._effects["pre"]:
             self._emit("`")
-        elif tag in {"math", "anki-mathjax"} or "mathjax" in classes:
-            self._math_tag = tag
-            self._math_nested_depth = 0
-            self._emit("[math: ")
+            frame.close_text = "`"
+        elif frame is not None and (tag in {"math", "anki-mathjax"} or "mathjax" in classes):
+            frame.effect, frame.sink = "math", []
         elif tag == "img":
             # Identity is the full source only; alt/title never decide sameness.
             label = _source_id(attributes.get("src") or "")
             kind = "math image" if "latex" in classes else "image"
             start = self._raw_length
             self._emit(f"[{kind}: {label}]" if label else f"[{kind}]")
-            if kind == "image" and self._reading is None:  # a reading has no picture
+            if kind == "image" and not self._sinks:  # a reading or math has no picture
                 self.image_ranges.append(
                     ImageSpan(start, self._raw_length, attributes.get("src") or "")
                 )
-        elif tag in {"audio", "video"}:
+        elif tag in {"audio", "video"} and frame is not None:
             source = attributes.get("src")
-            self._media = _MediaCapture(
-                tag, len(self._underline_stack), [_source_id(source)] if source else []
-            )
+            self._media = _MediaCapture(tag, [_source_id(source)] if source else [])
+            frame.effect = "media"
         elif tag == "input" and (
-            attributes.get("id", "").lower() == "typeans" or "typeans" in classes
+            (attributes.get("id") or "").lower() == "typeans" or "typeans" in classes
         ):
             self._emit("[type answer]")
-        elif tag in self._BLOCKS:
+        elif tag in self._BLOCKS and frame is not None:
             self._emit("\n")
+            frame.close_text = "\n"
+        if frame is not None:
+            self._push(frame)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # `<img/>` is only a start tag: closing a void element would end the enclosing hidden
-        # element, reading or math early (its counters never counted the void element).
+        # `<img/>` is only a start tag; `<span/>` opens and closes.
         self.handle_starttag(tag, attrs)
         if tag.lower() not in self._VOID:
             self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in self._VOID:
-            return  # a stray </br> or </img> closes nothing
-        for index in range(len(self._underline_stack) - 1, -1, -1):
-            if self._underline_stack[index][0] == tag:
-                for _, underlined in self._underline_stack[index:]:
-                    self._underline_depth -= int(underlined)
-                del self._underline_stack[index:]
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index].tag == tag:
                 break
-        reading = self._reading
-        if reading is not None and len(self._underline_stack) < reading.rt_depth:
-            self._finish_reading()  # closed by </rt> or by an ancestor (</ruby>, </div>, ...)
-            if tag == "rt":
-                return
-        if self._media is not None:
-            if len(self._underline_stack) >= self._media.depth:
-                return  # still inside the media element
-            self._flush_media()  # closed by its own end tag or by an ancestor's
-        if self._ignored_depth:
-            self._ignored_depth -= 1
-            return
-        if self._math_tag is not None:
-            if self._math_nested_depth:
-                self._math_nested_depth -= 1
-            elif tag == self._math_tag:
-                self._emit("]")
-                self._math_tag = None
-            return
-        if self._reading is not None and (
-            tag in {"ruby", "rt", "rp", "repetui-label"} or tag in self._HEADINGS
-        ):
-            return
-        ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if self._reading is None and ruby is not None and ruby.rp_depth:
-            ruby.rp_depth -= 1
-            return
-        if self._reading is None and ruby is not None and tag == "ruby":
-            self._ruby_stack.pop()
-            return
-        if tag in self._HEADINGS and self._heading_depth:
-            self._heading_depth = 0
-            self._emit("\n")
-        elif tag == "repetui-label" and self._heading_depth:
-            self._heading_depth = 0
-        elif tag == "rt":
-            self._emit("）")
-        elif tag == "pre" and self._pre_depth:
-            self._emit("\n```\n")
-            self._pre_depth -= 1
-        elif tag == "code" and not self._pre_depth:
-            self._emit("`")
-        elif tag in self._BLOCKS or tag == "tr":
-            self._emit("\n")
+        else:
+            return  # unmatched (</bogus>, </br>, a stray </p>): closes nothing
+        while len(self._stack) > index:
+            self._pop()  # the element, and anything still open inside it
 
     def _flush_media(self) -> None:
         media, self._media = self._media, None
@@ -497,18 +499,7 @@ class _RenderedHTMLParser(HTMLParser):
             label = " ".join(media.sources)
             self._emit(f"[{media.kind}: {label}]" if label else f"[{media.kind}]")
 
-    def _finish_reading(self) -> None:
-        """End the current <rt>. Anything opened inside it ends with it."""
-        ruby = self._reading
-        if ruby is None:
-            return
-        if self._media is not None and len(self._underline_stack) < self._media.depth:
-            self._flush_media()                  # still redirected into the reading
-        # Suppression and math inside the reading cannot outlive it (they were off when it began).
-        self._ignored_depth = 0
-        self._math_tag, self._math_nested_depth = None, 0
-        self._reading = None
-        ruby.rt_depth = 0
+    def _finish_reading(self, ruby: _RubyCapture) -> None:
         reading = " ".join(_normalise("".join(ruby.reading_parts), self._av).split())
         if reading and ruby.base_start < ruby.rt_base_end:
             self.ruby_ranges.append((ruby.base_start, ruby.rt_base_end, reading))
@@ -518,19 +509,15 @@ class _RenderedHTMLParser(HTMLParser):
 
     def close(self) -> None:
         super().close()
-        if self._reading is not None and self._media is not None:
-            self._flush_media()                  # an unclosed media element inside the reading
-        self._finish_reading()                   # an unclosed <rt> still ends at the document end
-        self._flush_media()  # an unclosed media element still ends at the document end
+        while self._stack:
+            self._pop()  # unclosed elements end at the document end
 
     def handle_data(self, data: str) -> None:
-        if self._media is not None:
-            return  # <audio>/<video> fallback text is never shown
-        if self._ignored_depth:
+        if self._effects["media"] or self._effects["suppress"]:
+            return  # media fallback and suppressed content are never shown
+        if self._reading is None and self._effects["rp"]:
             return
-        ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if self._reading is not None or ruby is None or not ruby.rp_depth:
-            self._emit(data)  # redirected into the reading while one is open
+        self._emit(data)
 
 
 class _ClassCollector(HTMLParser):
