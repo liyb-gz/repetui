@@ -14,6 +14,8 @@ from .card_text import annotated, inline_readings
 from .card_text import strip as _strip_text
 from .card_text import substitute as _replace_text
 from .controls import ReviewAction, ReviewControls
+from .media_labels import neutral_label_str
+from .media_names import scrub
 from .preferences import AnswerLayout, Preferences, SectionMode
 from .presentation import (
     CardPresentation,
@@ -62,6 +64,11 @@ def section_name(section: PresentationSection) -> str:
     """Return the best available human label without inventing card semantics."""
     label = section.label or section.source_label or "Answer"
     return label.replace("_", " ").strip()
+
+
+def display_section_name(section: PresentationSection) -> str:
+    """A section name as shown outside the card (settings rows): media-redacted."""
+    return scrub(neutral_label_str(section_name(section)), section.hidden_names)
 
 
 def _section_text(section: PresentationSection, style: str, show_readings: bool) -> Text:

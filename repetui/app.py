@@ -55,7 +55,7 @@ from .flow import (
     compose_rating_feedback,
     compose_ratings,
     compose_review,
-    section_name,
+    display_section_name,
     section_states,
 )
 from .help_text import build_help
@@ -66,7 +66,6 @@ from .images import (
     resolve_local_image,
 )
 from .lifecycle import CollectionLifecycle, SyncRunResult
-from .media_labels import neutral_label_str
 from .media_sync import MediaSyncSnapshot, MediaSyncStatus, MediaSyncTask
 from .native_images import NativeImageOverlay, NativePicture, mark_native_picture, overlay_for_app
 from .preferences import (
@@ -656,7 +655,7 @@ class SectionSettingItem(RepetuiListItem):
         self, preferences: Preferences, identity: CardTemplateIdentity
     ) -> None:
         mode = preferences.mode(identity, self.section.id)
-        label = neutral_label_str(section_name(self.section))
+        label = display_section_name(self.section)
         colour = {
             SectionMode.SHOW: "#79c98b",
             SectionMode.FOLD: "#d7b85a",

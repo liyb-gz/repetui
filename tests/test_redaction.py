@@ -1,11 +1,16 @@
-"""Round 3: media redaction holds by construction in the parser structure."""
+"""Round 3: media redaction holds by construction (parser structure plus a name scrub)."""
 
 import pytest
 
+from repetui.backend import DueCounts
+from repetui.flow import SectionState, compose_review, display_section_name
+from repetui.preferences import SectionMode
 from repetui.presentation import (
+    AVReference,
     CardTemplateIdentity,
     RawCardContent,
     SourceField,
+    TemplateFieldProfile,
     _render_document,
     display_presentation,
     present_card,
@@ -112,3 +117,129 @@ def test_bare_aria_hidden_hides_and_false_does_not() -> None:
 
 def test_bare_attributes_never_raise() -> None:
     assert _render_document("<input id class>x<img src alt>").text == "x[image]"
+
+
+# --- (d) the name scrub ---
+
+CORPUS = [
+    # round 1 and round 2 re-review repros
+    "<ruby>Q<rt>[sound:SECRET.mp3]</rt></ruby>",
+    '<ruby>Q<rt><audio src="SECRET.mp3" title="SECRET.mp3">SECRET.mp3</audio></rt></ruby>',
+    '<ruby>Q<rt><video src="SECRET.mp4"><source src="SECRET.webm">SECRET</video></rt></ruby>',
+    '<ruby>Q<rt><img src="SECRET.png" alt="SECRET" title="SECRET.png"></rt></ruby>',
+    '<ruby>Q<rt><svg><title>SECRET.svg</title><image href="SECRET.svg"/></svg></rt></ruby>',
+    # round 3 re-review repros
+    '<ruby>Q<rt><svg></bogus><title>SECRET.svg</title><image href="SECRET.svg"/></svg></rt></ruby>',
+    '<span hidden></bogus>SECRET.png</span><img src="SECRET.png">',
+    '<ruby>Q<rt><math><audio src="SECRET.mp3">SECRET</audio></math></rt></ruby>',
+    '<span class="mathjax"><video src="SECRET.mp4">SECRET.mp4</video></span>',
+    '<ruby>Q<rt><span class="mathjax"><video src="SECRET.mp4">SECRET</video></span></rt></ruby>',
+    "<ruby>Q<rt><pre>よみ</rt></ruby><code>body</code>[sound:SECRET.mp3]",
+    '<object data="SECRET.swf">SECRET.swf</object>',
+    '<iframe src="SECRET.html">SECRET.html</iframe>',
+    '<ruby>Q<rt><object data="SECRET.swf">SECRET</object></rt></ruby>',
+    '<span style="display:\n none">SECRET.png</span><img src="SECRET.png">',
+    '<span aria-hidden>SECRET.png</span><img src="SECRET.png">',
+    # other malformed or hostile shapes
+    '<audio src=SECRET.mp3>SECRET fallback',
+    '<div hidden><img src="x.png"/>SECRET.png</div><img src="SECRET.png">',
+    '<picture><source srcset="SECRET.webp 1x, SECRET-2x.webp 2x"><img src="SECRET.png"></picture>',
+    '<video poster="SECRET.jpg" src="clip.mp4"><track label="SECRET" src="SECRET.vtt"></video>',
+    "<div style=\"background:url('SECRET.jpg')\">SECRET.jpg</div>",
+    '<a href="SECRET.pdf">SECRET.pdf</a>',
+    "plain mention of SECRET.mp3 and SECRET [sound:SECRET.mp3]",
+    '<svg><image href="SECRET.svg"/><text>SECRET</text></svg>',
+    '<math><mi>x</mi><img src="SECRET.png" alt="SECRET.png"></math>',
+    "<ruby>Q<rt><code>[sound:SECRET.mp3]</code></rt></ruby>",
+    '<embed src="SECRET.swf">SECRET.swf',
+    "<ruby>Q<rt>[sound:SECRET.mp3]",
+    "<script>SECRET.mp3</script><style>.x{background:url(SECRET.png)}</style>",
+    "<template>SECRET</template><noscript>SECRET.mp3</noscript>[sound:SECRET.mp3]",
+    '<audio><source src="SECRET.ogg">SECRET.ogg</audio>',
+    '<audio src="SECRET%20x.mp3">SECRET x.mp3</audio> SECRET%20x.mp3',
+    "[sound:dir/SECRET.mp3] dir/SECRET.mp3",
+    "<h2>[sound:SECRET.mp3] SECRET:</h2>body",
+    "<b>SECRET.mp3:</b> x [sound:SECRET.mp3]",
+    "<u><b>SECRET</b></u> [sound:SECRET.mp3]",
+    '<ruby>SECRET<rt>SECRET.mp3</rt></ruby><img src="SECRET.mp3">',
+    '<img class="latex" src="SECRET.png">',
+    '<img src="data:image/png;base64,SECRETAAAA" alt="x"> [sound:SECRET.mp3]',
+    '<img src="http://[broken/SECRET.png"> <a href="http://[x">SECRET.png</a>',
+    '<img src="https://cdn.example/SECRET.png?v=2#x">SECRET.png',
+]
+
+FORBIDDEN = ("SECRET",)
+
+
+def _outputs(content: RawCardContent) -> list[str]:
+    outputs: list[str] = []
+    card = present_card(content)
+    shown = display_presentation(card)
+    for side in (shown.front, shown.back):
+        for section in side.sections:
+            outputs += [section.text, section.label or "", section.source_label or ""]
+            outputs += [reading for _, _, reading in section.furigana]
+    for section in card.back.sections + card.front.sections:
+        outputs.append(display_section_name(section))
+    states = tuple(
+        SectionState(section, SectionMode.FOLD, expanded=True) for section in card.back.sections
+    )
+    for readings in (True, False):
+        for revealed in (True, False):
+            outputs.append(compose_review(
+                card, "Deck", DueCounts(1, 0, 0), 60, revealed=revealed,
+                sections=states if revealed else (), show_readings=readings,
+            ).plain)
+    return outputs
+
+
+@pytest.mark.parametrize("shape", CORPUS)
+def test_no_media_name_reaches_any_display_output(shape) -> None:
+    contents = [
+        raw(f"<div>{shape}</div>", f"<div>{shape}</div><hr id=answer><div>A {shape}</div>"),
+        raw("<div>q</div>", f"<hr id=answer><h2>Meaning:</h2><div>{shape}</div>"),
+    ]
+    fields = (SourceField("Front", f"q {shape}"), SourceField("Back", f"a {shape}"))
+    contents.append(raw(f"q {shape}", f"<hr id=answer>a {shape}", *fields))
+    for content in contents:
+        for output in _outputs(content):
+            for secret in FORBIDDEN:
+                assert secret not in output, (shape, output)
+    # the field-setup preview renders the saved profile
+    profile = TemplateFieldProfile(("Front",), ("Back",))
+    preview = present_card(raw("x", "<hr id=answer>y", *fields), profile)
+    for revealed in (True, False):
+        flow = compose_review(preview, "D", DueCounts(1, 0, 0), 60, revealed=revealed).plain
+        assert "SECRET" not in flow, (shape, flow)
+
+
+def test_scrub_keeps_playback_identities_real() -> None:
+    card = present_card(raw(
+        '[sound:SECRET.mp3] <img src="SECRET.png"> <ruby>Q<rt>[sound:SECRET-2.mp3]</rt></ruby>',
+        "<hr id=answer>a",
+        front_av=(AVReference("audio", "SECRET.mp3"),),
+    ))
+    section = card.front.sections[0]
+    assert "[audio: SECRET.mp3]" in section.text
+    assert [image.source for image in section.images] == ["SECRET.png"]
+    assert [r for _, _, r in section.furigana] == ["[audio: SECRET-2.mp3]"]
+    shown = display_presentation(card).front.sections[0]
+    assert [image.source for image in shown.images] == ["SECRET.png"]   # v still opens it
+    assert shown.text == "[audio 1] [image] Q"
+    assert [r for _, _, r in shown.furigana] == ["[audio 2]"]
+
+
+def test_scrub_never_touches_ordinary_words_or_short_stems() -> None:
+    shown = display_presentation(present_card(raw(
+        '<img src="cat.png"> cat and image and audio <a href="https://x.org/wiki/Elephant">'
+        "Elephant</a> [sound:post.mp3] posted",
+        "<hr id=answer>a",
+    ))).front
+    assert shown.text == "[image] cat and image and audio Elephant [audio] posted"
+
+
+def test_scrub_replaces_a_leaked_name_with_media() -> None:
+    shown = display_presentation(present_card(raw(
+        "see SECRET.mp3 or SECRET [sound:SECRET.mp3]", "<hr id=answer>a"
+    ))).front
+    assert shown.text == "see [media] or [media] [audio]"

@@ -37,6 +37,7 @@ from .media_labels import (
     neutral_label_str,
     neutral_media_labels,
 )
+from .media_names import media_names, scrub, scrub_text
 
 _ANSWER_RULE = re.compile(r'<hr[^>]*\bid\s*=\s*["\']?answer["\']?[^>]*>', re.IGNORECASE)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
@@ -146,6 +147,8 @@ class PresentationSection:
     underlines: tuple[tuple[int, int], ...] = ()
     furigana: tuple[tuple[int, int, str], ...] = ()
     images: tuple[ImageSpan, ...] = ()
+    # Every media name the card's raw HTML references; display redaction scrubs them (media_names).
+    hidden_names: frozenset[str] = dataclass_field(default=frozenset(), compare=False, repr=False)
 
     @property
     def display_text(self) -> str:
@@ -738,17 +741,20 @@ def _neutral_text(
         for m in MEDIA_LABEL.finditer(reading)
     ]
     labels = {slot: neutral_label(slot[4], totals, seen) for slot in sorted(slots)}
+    names = section.hidden_names
     readings = {
-        key: _relabel(key[1], [labels[slot] for slot in slots if slot[1:3] == (0, index)])
+        key: scrub(_relabel(key[1], [labels[slot] for slot in slots if slot[1:3] == (0, index)]),
+                   names)
         for index, key in enumerate(shown)
     }
     furigana = tuple(
         (start, end, readings[(end, reading)]) for start, end, reading in section.furigana
     )
     marked = _marked_text(section.text, section.underlines, furigana, section.images)
-    return substitute(
+    marked = substitute(
         marked, MEDIA_LABEL, _relabel_match([labels[slot] for slot in slots if slot[1] == 1])
     )
+    return scrub_text(marked, names)  # last: a name the parser let through becomes [media]
 
 
 def _relabel_match(labels: list[str]) -> Callable[[re.Match[str]], str]:
@@ -770,12 +776,15 @@ def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[Presentatio
     shown: list[PresentationSection] = []
     for section in sections:
         label = section.label
+        names = section.hidden_names
         if label and _label_repeats_text(section):
             # Same numbers as the text's own copy of the label, so prefix stripping still works.
-            label = neutral_media_labels(Text(label), totals, seen.copy()).plain
+            label = scrub(neutral_media_labels(Text(label), totals, seen.copy()).plain, names)
         elif label:
-            label = neutral_media_labels(Text(label), totals, seen).plain
-        source_label = neutral_label_str(section.source_label) if section.source_label else None
+            label = scrub(neutral_media_labels(Text(label), totals, seen).plain, names)
+        source_label = (
+            scrub(neutral_label_str(section.source_label), names) if section.source_label else None
+        )
         marked = _neutral_text(section, totals, seen)
         underlines, furigana = annotations(marked)
         shown.append(replace(
@@ -1391,6 +1400,35 @@ def present_card(
     profile: TemplateFieldProfile | None = None,
 ) -> CardPresentation:
     """Convert one rendered Anki card to a complete immutable presentation."""
+    return _with_hidden_names(_present_card(raw, profile), raw)
+
+
+def card_media_names(raw: RawCardContent) -> frozenset[str]:
+    """Every media name referenced by the card's rendered sides, fields and AV list."""
+    return media_names(
+        (raw.front_html, raw.back_html, *(field.html for field in raw.fields)),
+        extra=(reference.label or "" for reference in raw.front_av + raw.back_av),
+    )
+
+
+def _with_hidden_names(presentation: CardPresentation, raw: RawCardContent) -> CardPresentation:
+    names = card_media_names(raw)
+    if not names:
+        return presentation
+
+    def side(card_side: CardSide) -> CardSide:
+        return CardSide(tuple(
+            replace(section, hidden_names=section.hidden_names | names)
+            for section in card_side.sections
+        ))
+
+    return replace(presentation, front=side(presentation.front), back=side(presentation.back))
+
+
+def _present_card(
+    raw: RawCardContent,
+    profile: TemplateFieldProfile | None = None,
+) -> CardPresentation:
     if profile is not None:
         available = {field.name for field in raw.fields}
         selected = profile.prompt_fields + profile.answer_fields
