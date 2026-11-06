@@ -5053,6 +5053,53 @@ async def test_media_that_will_not_stop_aborts_sync(tmp_path, monkeypatch) -> No
         assert synced == [] and not app.syncing
 
 
+class BlockingCancelMediaTask(FakeMediaTask):
+    """Active media whose cancel() blocks (like a held start lock) until released."""
+
+    def __init__(self) -> None:
+        super().__init__(stop_after=None)
+        self.release = Event()
+        self.calls = 0
+
+    def cancel(self) -> None:
+        self.calls += 1
+        self.release.wait(10)
+        self.cancelled = True
+        self.done.set()
+
+
+@pytest.mark.asyncio
+async def test_blocking_media_cancel_is_inside_the_timeout(tmp_path, monkeypatch) -> None:
+    synced: list[int] = []
+    app, backend = make_app(
+        tmp_path, syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1]
+    )
+    monkeypatch.setattr(type(app), "MEDIA_CANCEL_TIMEOUT", 0.2)
+    task = BlockingCancelMediaTask()
+    try:
+        async with app.run_test(size=(40, 6)) as pilot:
+            with_active_media(app, monkeypatch, task)
+            created = controlled_media(backend, monkeypatch)
+            await pilot.press("s")
+            await pilot.pause(0.8)
+            # One deadline covers cancel() too: the reservation is released, no sync ran.
+            assert synced == [] and not app.syncing and app._sync_popup is None
+            assert app._media_task is task and task.calls == 1  # ownership kept
+            # A late cancel must not abort a replacement: none starts while it is pending.
+            app._start_media_downloads()
+            assert created == [] and app._media_task is task
+            await pilot.press("s")  # waits on the same pending cancel, no second thread
+            await pilot.pause(0.8)
+            assert task.calls == 1 and synced == [] and not app.syncing
+            task.release.set()
+            await pilot.pause(0.2)
+            await pilot.press("s")
+            await pilot.pause(1.0)
+            assert synced == [1]
+    finally:
+        task.release.set()
+
+
 @pytest.mark.asyncio
 async def test_interrupted_media_restarts_after_failed_sync(tmp_path, monkeypatch) -> None:
     app, _ = make_app(tmp_path, syncer=lambda _p: SyncOutcome(SyncStatus.OFFLINE))

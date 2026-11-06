@@ -9,7 +9,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
+from time import monotonic
 from typing import Protocol, cast
 
 from rich.cells import cell_len
@@ -3314,6 +3315,8 @@ class RepetuiApp(App[None]):
         self._sync_thread: Thread | None = None
         self._sync_fatal_error: str | None = None
         self._media_task: MediaSyncTask | None = None
+        # A media cancel() still running in its own thread, and the event it sets when done.
+        self._media_cancel: tuple[MediaSyncTask, Event] | None = None
         self._media_interrupted = False
         self._media_snapshot: MediaSyncSnapshot | None = None
         self._media_progress_shown = False
@@ -3527,11 +3530,9 @@ class RepetuiApp(App[None]):
             return
         task = self._media_task if self.media_downloading else None
         if task is not None:
-            # cancel() may block on the task's start lock while native sync starts:
-            # keep it off the UI thread.
-            await asyncio.to_thread(task.cancel)
-            stopped = await asyncio.to_thread(task.done.wait, self.MEDIA_CANCEL_TIMEOUT)
+            stopped = await self._stop_media(task)
             if not stopped:
+                # The unfinished task stays ours; _start_media_downloads waits for its cancel.
                 self.lifecycle.finish_sync()  # release the reservation; nothing transferred
                 self.notify("Media download did not stop; try again.", severity="warning")
                 return
@@ -3539,6 +3540,32 @@ class RepetuiApp(App[None]):
         self._sync_popup = SyncPopup()
         self.push_screen(self._sync_popup, self._sync_popup_closed)
         self.call_after_refresh(self._start_sync_thread)
+
+    async def _stop_media(self, task: MediaSyncTask) -> bool:
+        """Cancel media and wait for it to end, under one deadline over both steps."""
+        pending = self._media_cancel
+        if pending is None or pending[0] is not task:
+            finished = Event()
+
+            def cancel() -> None:
+                try:
+                    task.cancel()
+                finally:
+                    finished.set()
+
+            # cancel() may block on the task's start lock while native sync starts. Run it
+            # in its own daemon thread so a cancel that never returns cannot stall the UI,
+            # a retry, or shutdown; a retry waits on this same cancel.
+            Thread(target=cancel, name="repetui-media-cancel", daemon=True).start()
+            pending = self._media_cancel = (task, finished)
+        finished = pending[1]
+        timeout = self.MEDIA_CANCEL_TIMEOUT
+
+        def wait() -> bool:
+            deadline = monotonic() + timeout
+            return finished.wait(timeout) and task.done.wait(max(0.0, deadline - monotonic()))
+
+        return await asyncio.to_thread(wait)
 
     def action_media_progress(self) -> None:
         if self._media_snapshot is None:
@@ -3581,6 +3608,8 @@ class RepetuiApp(App[None]):
     def _start_media_downloads(self) -> None:
         if not self.backend.is_open or self.lifecycle.stopped:
             return
+        if self._media_cancel is not None and not self._media_cancel[1].is_set():
+            return  # a late cancel() of the old task could abort a replacement transfer
         task = self.backend.media_sync_task(
             self.profile, lambda task, snapshot: self.post_message(MediaUpdated(task, snapshot)),
             endpoint=self._media_endpoint,
