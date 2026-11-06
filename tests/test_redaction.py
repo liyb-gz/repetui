@@ -262,3 +262,79 @@ def test_answer_word_named_like_its_audio_still_shows() -> None:
         "<div>Q</div>", "<hr id=answer><div>hallo [sound:hallo.mp3]</div>"
     ))).back
     assert "hallo [audio]" in "".join(section.text for section in shown.sections)
+
+
+# --- round 4: false positives, gaps, nested math ---
+
+def _front(front: str) -> str:
+    return display_presentation(present_card(raw(front, "<hr id=answer>a"))).front.text
+
+
+@pytest.mark.parametrize("html", [
+    "<pre>data = 3.5</pre> e.g. 3.5",
+    '<pre>data = "e.g."</pre> e.g.',
+    '<code>src="notes.png"</code> notes.png',
+    '<a href="https://example.org">https://example.org</a>',
+    '<a href="/3.5">3.5</a> and 3.5',
+    '<a href="https://example.org/">see example.org</a>',
+    '<a href="https://example.org/docs/v2.0">v2.0</a> version 2.0',
+    '<a href="https://example.org/page.html">page.html</a>',
+])
+def test_text_without_a_media_reference_renders_unchanged(html) -> None:
+    from repetui.presentation import _render_document
+
+    assert " ".join(_front(html).split()) == " ".join(_render_document(html).text.split())
+    assert "[media]" not in _front(html)
+
+
+def test_ordinary_text_is_never_scrubbed() -> None:
+    text = (
+        "Visit https://example.org/a/b?x=1 or www.test.com. Version 3.5.1 and v2.0, e.g. 3.5 "
+        "kg. Mr. Smith wrote notes.txt, photo.png and song.mp3 (not on this card)."
+    )
+    assert _front(f"{text} [sound:other.mp3]") == f"{text} [audio]"
+
+
+def test_language_card_keeps_the_visible_word_named_like_its_audio() -> None:
+    shown = display_presentation(present_card(raw(
+        "<div>hallo</div>[sound:hallo.mp3]", "<hr id=answer><div>hallo means hello</div>"
+    )))
+    assert shown.front.text.split() == ["hallo", "[audio]"]
+    assert "hallo means hello" in shown.back.text and "[media]" not in shown.back.text
+
+
+def test_query_and_fragment_never_hide_a_linked_file_name() -> None:
+    assert _front('<a href="SECRET.pdf?download=1">SECRET.pdf</a>') == "[media]"
+    assert _front('<img src="pics/SECRET.png#v2"> SECRET.png') == "[image] [media]"
+    assert _front('<img src="https://cdn.example/x/SECRET.png?s=2">see SECRET.png') == (
+        "[image]see [media]")
+
+
+@pytest.mark.parametrize("html", [
+    '<img src="SECRET  NAME.png"> SECRET  NAME.png',
+    '<img src="SECRET NAME.png"> SECRET&nbsp;NAME.png',
+    '<img src="SECRET&nbsp;NAME.png"> SECRET NAME.png',
+    '<img src="SECRET%20NAME.png"> SECRET%2520NAME.png',
+    '<img src="SECRET_NAME.png"> SECRET NAME.png',
+])
+def test_whitespace_and_encoding_variants_of_a_name_are_scrubbed(html) -> None:
+    assert "SECRET" not in _front(html)
+
+
+@pytest.mark.parametrize("readings", [True, False])
+def test_normalised_name_inside_a_reading_is_scrubbed(readings) -> None:
+    card = present_card(raw(
+        '<img src="SECRET  NAME.png"><ruby>Q<rt>SECRET  NAME.png</rt></ruby>', "<hr id=answer>a"
+    ))
+    shown = display_presentation(card).front.sections[0]
+    assert "SECRET" not in " ".join(r for _, _, r in shown.furigana)
+    flow = compose_review(card, "D", DueCounts(1, 0, 0), 60, revealed=False,
+                          show_readings=readings).plain
+    assert "SECRET" not in flow
+
+
+def test_settings_label_never_shows_a_transformed_file_name() -> None:
+    card = present_card(raw(
+        "q", "<hr id=answer><h2>SECRET_FILE.mp3</h2>body [sound:SECRET_FILE.mp3]"
+    ))
+    assert [display_section_name(section) for section in card.back.sections][0] == "[media]"

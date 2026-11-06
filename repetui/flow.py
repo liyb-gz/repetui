@@ -67,8 +67,11 @@ def section_name(section: PresentationSection) -> str:
 
 
 def display_section_name(section: PresentationSection) -> str:
-    """A section name as shown outside the card (settings rows): media-redacted."""
-    return scrub(neutral_label_str(section_name(section)), section.hidden_names)
+    """A section name as shown outside the card (settings rows): media-redacted before and after
+    section_name's own rewriting, so a transformed file name never shows."""
+    names = section.hidden_names
+    label = scrub(neutral_label_str(section.label or section.source_label or "Answer"), names)
+    return scrub(label.replace("_", " ").strip(), names)
 
 
 def _section_text(section: PresentationSection, style: str, show_readings: bool) -> Text:
