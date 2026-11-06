@@ -23,9 +23,10 @@ class _Writable(Protocol):
     def flush(self) -> None: ...
 
 
-# Enabled by Textual only after the terminal answered the ?2048$p query (LinuxDriver.process_message):
-# in-band window resize, then pixel mouse reporting. A re-attached terminal starts with both off, so
-# without them Textual ignores SIGWINCH (in-band mode) and scales cell mouse coordinates as pixels.
+# Enabled by Textual only after the terminal answered the ?2048$p query
+# (LinuxDriver.process_message): in-band window resize, then pixel mouse reporting. A re-attached
+# terminal starts with both off, so without them Textual ignores SIGWINCH (in-band mode) and
+# scales cell mouse coordinates as pixels.
 IN_BAND_RESIZE_SEQUENCE = "\x1b[?2048h"
 MOUSE_PIXELS_SEQUENCE = "\x1b[?1016h"
 
