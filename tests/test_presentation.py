@@ -891,3 +891,84 @@ def test_indexed_av_inside_ruby_reading_uses_its_neutral_placeholder() -> None:
         card, "Deck", DueCounts(1, 0, 0), 60, revealed=False, show_readings=True
     ).plain
     assert "SECRET" not in flow and "anki:play" not in flow
+
+
+# --- round 2: one shared path for <rt> content (A), shared numbering (B), self-closing tags (C) ---
+
+_RT_SUPPRESSED = [
+    '<svg><title>SECRET.svg</title><image href="SECRET.svg"/></svg>',
+    '<svg class="latex"><title>SECRET.svg</title></svg>',
+    '<object data="SECRET.swf" type="application/x-shockwave-flash"></object>',
+    '<embed src="SECRET.swf">',
+    '<embed src="SECRET.swf"/>',
+    '<iframe src="SECRET.html"></iframe>',
+    '<span hidden>SECRET.mp3</span>',
+    '<script>SECRET.js</script>',
+    '<picture><source srcset="SECRET.webp"><img src="SECRET.png" alt="SECRET"></picture>',
+    '<audio src="SECRET.mp3"><track label="SECRET.vtt" src="SECRET.vtt">SECRET</audio>',
+]
+
+
+def _display_strings(card) -> str:
+    shown = display_presentation(card)
+    out = []
+    for side in (shown.front, shown.back):
+        for section in side.sections:
+            out += [section.text, section.label or "", section.source_label or ""]
+            out += [reading for _, _, reading in section.furigana]
+            out += [image.source for image in section.images if "SECRET" in image.source]
+    return "\n".join(out)
+
+
+@pytest.mark.parametrize("readings", [True, False])
+@pytest.mark.parametrize("inner", _RT_SUPPRESSED)
+def test_suppressed_and_media_elements_inside_rt_never_leak(inner, readings) -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    html = f"<ruby>Q<rt>よ{inner}み</rt></ruby>"
+    card = present_card(raw(f"<div>{html}</div>", f"<hr id=answer><div>A {html}</div>"))
+    assert "SECRET" not in _display_strings(card)
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=True, show_readings=readings
+    ).plain
+    assert "SECRET" not in flow
+
+
+@pytest.mark.parametrize("inner", _RT_SUPPRESSED + [
+    "[sound:SECRET.mp3]", '<img src="SECRET.png" alt="SECRET">', '<img class="latex" src="S.png">',
+    '<video src="SECRET.mp4">SECRET</video>', "<b>bold</b> <i>it</i>",
+])
+def test_rt_content_gets_exactly_the_body_treatment(inner) -> None:
+    """A reading carries exactly the text the same HTML gives in the body: same identity labels,
+    same suppression, and after display redaction the same neutral labels."""
+    from repetui.media_labels import neutral_label_str
+
+    body = " ".join(_render_document(f"<div>{inner}</div>").text.split())
+    doc = _render_document(f"<ruby>Q<rt>{inner}</rt></ruby>")
+    assert doc.text == "Q"
+    assert [reading for _, _, reading in doc.furigana] == ([body] if body else [])
+    shown = display_presentation(present_card(raw(
+        f"<ruby>Q<rt>{inner}</rt></ruby>", "<hr id=answer>a"
+    ))).front.sections[0]
+    assert [r for _, _, r in shown.furigana] == ([neutral_label_str(body)] if body else [])
+
+
+def test_self_closing_void_tag_inside_rt_does_not_end_the_reading() -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    card = present_card(raw(
+        '<ruby>Q<rt>よ<img src="S.png"/>み<br/>TAIL</rt></ruby>', "<hr id=answer>a"
+    ))
+    section = card.front.sections[0]
+    assert section.text == "Q"
+    assert section.furigana == ((0, 1, "よ[image: S.png]み TAIL"),)
+    hidden = compose_review(card, "Deck", DueCounts(1, 0, 0), 60, revealed=False).plain
+    assert "TAIL" not in hidden and "）" not in hidden
+
+
+def test_self_closing_void_tag_never_ends_hidden_content() -> None:
+    doc = _render_document('<div hidden><img src="x.png"/><br/>SECRET</div>after')
+    assert "SECRET" not in doc.text and doc.text == "after"
+

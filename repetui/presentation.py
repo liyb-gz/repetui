@@ -181,13 +181,12 @@ class _MediaCapture:
     kind: str
     depth: int
     sources: list[str] = dataclass_field(default_factory=list)
-    reading: _RubyCapture | None = None  # inside <rt>: its label joins the reading
 
 
 @dataclass
 class _RubyCapture:
     base_start: int
-    rt_depth: int = 0
+    rt_depth: int = 0  # open-element depth of the current <rt>; 0 = not inside one
     rp_depth: int = 0
     rt_base_end: int = 0
     reading_parts: list[str] = dataclass_field(default_factory=list)
@@ -257,10 +256,16 @@ class _RenderedHTMLParser(HTMLParser):
         self._raw_length = 0
         self.underline_ranges: list[tuple[int, int]] = []
         self._ruby_stack: list[_RubyCapture] = []
+        # The <rt> being read. Its content takes the same path as the body (suppression, media
+        # identity labels, math, hidden content); only _emit redirects the text into the reading.
+        self._reading: _RubyCapture | None = None
         self.ruby_ranges: list[tuple[int, int, str]] = []
         self.image_ranges: list[ImageSpan] = []
 
     def _emit(self, text: str) -> None:
+        if self._reading is not None:
+            self._reading.reading_parts.append(text)
+            return
         start = self._raw_length
         self._raw_length += len(text)
         if self._underline_depth and text:
@@ -327,36 +332,26 @@ class _RenderedHTMLParser(HTMLParser):
             return
 
         ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if ruby is not None and ruby.rt_depth:
-            if tag not in self._VOID:
-                ruby.rt_depth += 1
-            # Media inside a reading keeps its identity label; display redacts it later.
-            if tag in {"audio", "video"}:
-                source = attributes.get("src")
-                self._media = _MediaCapture(
-                    tag, len(self._underline_stack), [_source_id(source)] if source else [],
-                    ruby,
-                )
-            elif tag == "img":
-                label = _source_id(attributes.get("src") or "")
-                kind = "math image" if "latex" in self._classes(attributes) else "image"
-                ruby.reading_parts.append(f"[{kind}: {label}]" if label else f"[{kind}]")
-            return
-        if ruby is not None and ruby.rp_depth:
-            if tag not in self._VOID:
-                ruby.rp_depth += 1
-            return
-        if tag == "ruby":
-            self._ruby_stack.append(_RubyCapture(self._raw_length))
-            return
-        if ruby is not None and tag == "rt":
-            ruby.rt_base_end = self._raw_length
-            ruby.rt_depth = 1
-            ruby.reading_parts.clear()
-            return
-        if ruby is not None and tag == "rp":
-            ruby.rp_depth = 1
-            return
+        if self._reading is not None:
+            if tag in {"ruby", "rt", "rp", "repetui-label"} or tag in self._HEADINGS:
+                return  # structure inside a reading is only text
+        else:
+            if ruby is not None and ruby.rp_depth:
+                if tag not in self._VOID:
+                    ruby.rp_depth += 1
+                return
+            if tag == "ruby":
+                self._ruby_stack.append(_RubyCapture(self._raw_length))
+                return
+            if ruby is not None and tag == "rt":
+                ruby.rt_base_end = self._raw_length
+                ruby.rt_depth = len(self._underline_stack)  # includes this <rt>
+                ruby.reading_parts.clear()
+                self._reading = ruby
+                return
+            if ruby is not None and tag == "rp":
+                ruby.rp_depth = 1
+                return
 
         classes = self._classes(attributes)
         if tag == "svg":
@@ -405,7 +400,7 @@ class _RenderedHTMLParser(HTMLParser):
             kind = "math image" if "latex" in classes else "image"
             start = self._raw_length
             self._emit(f"[{kind}: {label}]" if label else f"[{kind}]")
-            if kind == "image":
+            if kind == "image" and self._reading is None:  # a reading has no picture
                 self.image_ranges.append(
                     ImageSpan(start, self._raw_length, attributes.get("src") or "")
                 )
@@ -421,14 +416,28 @@ class _RenderedHTMLParser(HTMLParser):
         elif tag in self._BLOCKS:
             self._emit("\n")
 
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # `<img/>` is only a start tag: closing a void element would end the enclosing hidden
+        # element, reading or math early (its counters never counted the void element).
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in self._VOID:
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag in self._VOID:
+            return  # a stray </br> or </img> closes nothing
         for index in range(len(self._underline_stack) - 1, -1, -1):
             if self._underline_stack[index][0] == tag:
                 for _, underlined in self._underline_stack[index:]:
                     self._underline_depth -= int(underlined)
                 del self._underline_stack[index:]
                 break
+        reading = self._reading
+        if reading is not None and len(self._underline_stack) < reading.rt_depth:
+            self._finish_reading()  # closed by </rt> or by an ancestor (</ruby>, </div>, ...)
+            if tag == "rt":
+                return
         if self._media is not None:
             if len(self._underline_stack) >= self._media.depth:
                 return  # still inside the media element
@@ -443,23 +452,15 @@ class _RenderedHTMLParser(HTMLParser):
                 self._emit("]")
                 self._math_tag = None
             return
-        ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if ruby is not None and ruby.rt_depth:
-            ruby.rt_depth -= 1
-            if not ruby.rt_depth:
-                reading = _normalise("".join(ruby.reading_parts), self._av)
-                if reading and ruby.base_start < ruby.rt_base_end:
-                    self.ruby_ranges.append(
-                        (ruby.base_start, ruby.rt_base_end, reading)
-                    )
-                elif reading:
-                    self._emit(f"（{reading}）")
-                ruby.base_start = self._raw_length
+        if self._reading is not None and (
+            tag in {"ruby", "rt", "rp", "repetui-label"} or tag in self._HEADINGS
+        ):
             return
-        if ruby is not None and ruby.rp_depth:
+        ruby = self._ruby_stack[-1] if self._ruby_stack else None
+        if self._reading is None and ruby is not None and ruby.rp_depth:
             ruby.rp_depth -= 1
             return
-        if ruby is not None and tag == "ruby":
+        if self._reading is None and ruby is not None and tag == "ruby":
             self._ruby_stack.pop()
             return
         if tag in self._HEADINGS and self._heading_depth:
@@ -481,14 +482,32 @@ class _RenderedHTMLParser(HTMLParser):
         media, self._media = self._media, None
         if media is not None:
             label = " ".join(media.sources)
-            label = f"[{media.kind}: {label}]" if label else f"[{media.kind}]"
-            if media.reading is not None:
-                media.reading.reading_parts.append(label)
-            else:
-                self._emit(label)
+            self._emit(f"[{media.kind}: {label}]" if label else f"[{media.kind}]")
+
+    def _finish_reading(self) -> None:
+        """End the current <rt>. Anything opened inside it ends with it."""
+        ruby = self._reading
+        if ruby is None:
+            return
+        if self._media is not None and len(self._underline_stack) < self._media.depth:
+            self._flush_media()                  # still redirected into the reading
+        # Suppression and math inside the reading cannot outlive it (they were off when it began).
+        self._ignored_depth = 0
+        self._math_tag, self._math_nested_depth = None, 0
+        self._reading = None
+        ruby.rt_depth = 0
+        reading = " ".join(_normalise("".join(ruby.reading_parts), self._av).split())
+        if reading and ruby.base_start < ruby.rt_base_end:
+            self.ruby_ranges.append((ruby.base_start, ruby.rt_base_end, reading))
+        elif reading:
+            self._emit(f"（{reading}）")
+        ruby.base_start = self._raw_length
 
     def close(self) -> None:
         super().close()
+        if self._reading is not None and self._media is not None:
+            self._flush_media()                  # an unclosed media element inside the reading
+        self._finish_reading()                   # an unclosed <rt> still ends at the document end
         self._flush_media()  # an unclosed media element still ends at the document end
 
     def handle_data(self, data: str) -> None:
@@ -497,10 +516,8 @@ class _RenderedHTMLParser(HTMLParser):
         if self._ignored_depth:
             return
         ruby = self._ruby_stack[-1] if self._ruby_stack else None
-        if ruby is not None and ruby.rt_depth:
-            ruby.reading_parts.append(data)
-        elif ruby is None or not ruby.rp_depth:
-            self._emit(data)
+        if self._reading is not None or ruby is None or not ruby.rp_depth:
+            self._emit(data)  # redirected into the reading while one is open
 
 
 class _ClassCollector(HTMLParser):
