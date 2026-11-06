@@ -2,8 +2,9 @@
 scrubbed from all display text, whatever the parser made of the markup.
 
 References come only from real markup and Anki's sound syntax:
-- the attributes src, href, srcset (each URL), data and poster, read from inside tags (`<...>`),
-  never from plain text and never from the content of `<pre>` or `<code>`;
+- the attributes src, href, srcset (each URL), data and poster, read only from inside tags
+  (`<...>`), never from plain text. A real tag inside `<pre>` or `<code>` is still a tag (and its
+  name is still scrubbed); text written there, e.g. `src="x.png"`, is not a tag;
 - CSS `url(...)` in style attributes and `<style>` blocks;
 - `[sound:...]`.
 
@@ -48,7 +49,6 @@ MEDIA_EXTENSIONS = frozenset({
 _MEDIA_ATTRIBUTES = frozenset({"src", "href", "srcset", "data", "poster"})
 _TAG = re.compile(r"""<[A-Za-z][^\s/>]*((?:[^>"']|"[^"]*"|'[^']*')*)>""")
 _ATTRIBUTE = re.compile(r"""([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""")
-_LITERAL = re.compile(r"<(pre|code)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 _STYLE_BLOCK = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.IGNORECASE | re.DOTALL)
 _CSS_URL = re.compile(r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)""", re.IGNORECASE)
 _SOUND = re.compile(r"\[sound:([^\]]+)\]", re.IGNORECASE)
@@ -67,11 +67,10 @@ def _references(source: str) -> Iterable[tuple[str, str]]:
     """(kind, value) for every media reference in raw HTML or text."""
     for match in _SOUND.finditer(source):
         yield "sound", match.group(1)
-    markup = _LITERAL.sub(" ", source)  # code samples are text, not references
-    for block in _STYLE_BLOCK.finditer(markup):
+    for block in _STYLE_BLOCK.finditer(source):
         for url in _css_urls(block.group(1)):
             yield "url", url
-    for tag in _TAG.finditer(markup):
+    for tag in _TAG.finditer(source):
         for attribute in _ATTRIBUTE.finditer(tag.group(1)):
             name = attribute.group(1).lower()
             raw = next((group for group in attribute.groups()[1:] if group is not None), None)

@@ -166,6 +166,9 @@ CORPUS = [
     '<img src="data:image/png;base64,SECRETAAAA" alt="x"> [sound:SECRET.mp3]',
     '<img src="http://[broken/SECRET.png"> <a href="http://[x">SECRET.png</a>',
     '<img src="https://cdn.example/SECRET.png?v=2#x">SECRET.png',
+    # a real tag inside <code>/<pre> is still a reference
+    '<code><img src="SECRET.png"> SECRET.png</code>',
+    '<pre><audio src="SECRET.mp3">x</audio> SECRET.mp3</pre>',
 ]
 
 FORBIDDEN = ("SECRET",)
