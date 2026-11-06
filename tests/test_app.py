@@ -5654,6 +5654,39 @@ async def test_quit_sync_success_exits_even_when_reopen_fails(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+@pytest.mark.parametrize("aborted", [SyncStatus.OFFLINE, SyncStatus.FULL_SYNC_REQUIRED])
+async def test_aborted_quit_sync_then_manual_sync_stays_open(
+    tmp_path, monkeypatch, mode, quit_keys, aborted
+) -> None:
+    outcomes = [aborted, SyncStatus.SYNCED]
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
+    preferences.set_sync_on_quit(profile, mode)
+    synced: list[int] = []
+    app, _ = make_app(
+        tmp_path, preferences=preferences,
+        syncer=lambda _p: (synced.append(1), SyncOutcome(outcomes.pop(0)))[1],
+    )
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press(*quit_keys)
+        await pilot.pause(0.5)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert exits == [] and not app.exit_after_sync and app.unsynced_reviews
+        await pilot.press("s")  # a later manual sync succeeds: it must not exit
+        await pilot.pause(1.6)
+        assert synced == [1, 1] and exits == []
+        assert not app.unsynced_reviews and not app.exit_after_sync and not app.syncing
+        await pilot.press("q")
+        await pilot.pause()
+        assert exits == [1] and synced == [1, 1]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [SyncOnQuit.OFF, SyncOnQuit.ASK, SyncOnQuit.ON])
 async def test_failed_manual_sync_neither_arms_nor_exits(tmp_path, monkeypatch, mode) -> None:
     app, _, synced, exits = quit_app(tmp_path, monkeypatch, mode, SyncStatus.OFFLINE)
