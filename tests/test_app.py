@@ -5445,8 +5445,10 @@ async def test_audio_toggle_controls_autoplay_but_not_replay(tmp_path, monkeypat
         await pilot.press("enter")
         assert app.audio_enabled is True
         assert len([p for p in RecordingAudio.plays if p]) == 1
+        stops_before = len(RecordingAudio.stops)
         await pilot.press("m")
-        assert app.audio_enabled is False and RecordingAudio.stops
+        assert app.audio_enabled is False
+        assert len(RecordingAudio.stops) > stops_before  # m itself stopped playback
         await pilot.press("enter")
         assert len([p for p in RecordingAudio.plays if p]) == 1
         await pilot.press("p")
@@ -5468,7 +5470,9 @@ async def test_saved_audio_off_is_loaded_at_start_and_toggle_is_session_only(
         await pilot.press("enter")
         assert not [p for p in RecordingAudio.plays if p]
         await pilot.press("m", "escape", "enter")      # toggle on, back to decks, reopen deck
+        await pilot.pause()
         assert app.audio_enabled is True
+        assert [p for p in RecordingAudio.plays if p]  # the reopened deck autoplays
         assert preferences.audio_at_start(profile) is False
 
 
