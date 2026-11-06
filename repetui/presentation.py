@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from html.parser import HTMLParser
@@ -22,8 +22,21 @@ from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 
-from .card_text import INLINE_FURIGANA, annotated, annotations, extract_readings, normalise
-from .media_labels import media_kinds, neutral_label_str, neutral_media_labels
+from .card_text import (
+    INLINE_FURIGANA,
+    annotated,
+    annotations,
+    extract_readings,
+    normalise,
+    substitute,
+)
+from .media_labels import (
+    MEDIA_LABEL,
+    media_kinds,
+    neutral_label,
+    neutral_label_str,
+    neutral_media_labels,
+)
 
 _ANSWER_RULE = re.compile(r'<hr[^>]*\bid\s*=\s*["\']?answer["\']?[^>]*>', re.IGNORECASE)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
@@ -715,11 +728,57 @@ def _visible_text(section: PresentationSection) -> str:
     return section.display_text
 
 
+def _shown_readings(section: PresentationSection) -> list[tuple[int, str]]:
+    """Distinct (end, reading) pairs in display order: a reading shows right after its base."""
+    return sorted({(end, reading) for _, end, reading in section.furigana})
+
+
+def _relabel(text: str, labels: list[str]) -> str:
+    return MEDIA_LABEL.sub(_relabel_match(labels), text)
+
+
+def _neutral_text(
+    section: PresentationSection, totals: Counter[str], seen: Counter[str]
+) -> Text:
+    """Redact a section's text and its readings in one pass, numbered in display order."""
+    shown = _shown_readings(section)
+    # (display position, 0 = reading / 1 = body, reading index, offset, kind); a reading shows at
+    # its base's end, before any body label that starts there.
+    slots = [(m.start(), 1, -1, m.start(), m.group(1)) for m in MEDIA_LABEL.finditer(section.text)]
+    slots += [
+        (end, 0, index, m.start(), m.group(1))
+        for index, (end, reading) in enumerate(shown)
+        for m in MEDIA_LABEL.finditer(reading)
+    ]
+    labels = {slot: neutral_label(slot[4], totals, seen) for slot in sorted(slots)}
+    readings = {
+        key: _relabel(key[1], [labels[slot] for slot in slots if slot[1:3] == (0, index)])
+        for index, key in enumerate(shown)
+    }
+    furigana = tuple(
+        (start, end, readings[(end, reading)]) for start, end, reading in section.furigana
+    )
+    marked = _marked_text(section.text, section.underlines, furigana, section.images)
+    return substitute(
+        marked, MEDIA_LABEL, _relabel_match([labels[slot] for slot in slots if slot[1] == 1])
+    )
+
+
+def _relabel_match(labels: list[str]) -> Callable[[re.Match[str]], str]:
+    """Replace successive matches with `labels` in order."""
+    replacement = iter(labels)
+    return lambda _match: next(replacement)
+
+
 def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[PresentationSection, ...]:
-    """Redact one side for display, numbering each media kind across the whole side."""
+    """Redact one side for display, numbering each media kind across the whole side, readings
+    included (they are display text too: media inside <rt> shows only its neutral label)."""
     totals: Counter[str] = Counter()
     for section in sections:
-        totals.update(kind for kind in media_kinds(_visible_text(section)) if kind != "math image")
+        visible = [_visible_text(section)] + [r for _, r in _shown_readings(section)]
+        totals.update(
+            kind for text in visible for kind in media_kinds(text) if kind != "math image"
+        )
     seen: Counter[str] = Counter()
     shown: list[PresentationSection] = []
     for section in sections:
@@ -730,15 +789,8 @@ def neutral_side(sections: tuple[PresentationSection, ...]) -> tuple[Presentatio
         elif label:
             label = neutral_media_labels(Text(label), totals, seen).plain
         source_label = neutral_label_str(section.source_label) if section.source_label else None
-        marked = neutral_media_labels(
-            _marked_text(section.text, section.underlines, section.furigana, section.images),
-            totals, seen,
-        )
+        marked = _neutral_text(section, totals, seen)
         underlines, furigana = annotations(marked)
-        # Readings are display text too: media inside <rt> shows only its neutral label.
-        furigana = tuple(
-            (start, end, neutral_label_str(reading)) for start, end, reading in furigana
-        )
         shown.append(replace(
             section, text=marked.plain, label=label, source_label=source_label,
             underlines=underlines, furigana=furigana, images=_image_spans(marked),

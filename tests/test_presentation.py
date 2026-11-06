@@ -972,3 +972,29 @@ def test_self_closing_void_tag_never_ends_hidden_content() -> None:
     doc = _render_document('<div hidden><img src="x.png"/><br/>SECRET</div>after')
     assert "SECRET" not in doc.text and doc.text == "after"
 
+
+def test_reading_labels_share_the_side_numbering() -> None:
+    from repetui.backend import DueCounts
+    from repetui.flow import compose_review
+
+    card = present_card(raw(
+        "[sound:a.mp3] <ruby>Q<rt>[sound:b.mp3]</rt></ruby>", "<hr id=answer>x"
+    ))
+    shown = display_presentation(card).front.sections[0]
+    assert shown.text == "[audio 1] Q"
+    assert [r for _, _, r in shown.furigana] == ["[audio 2]"]
+    flow = compose_review(
+        card, "Deck", DueCounts(1, 0, 0), 60, revealed=False, show_readings=True
+    ).plain
+    assert "[audio 1] Q[[audio 2]]" in flow
+
+
+def test_two_readings_with_media_are_numbered_in_display_order() -> None:
+    card = present_card(raw(
+        "<ruby>A<rt>[sound:a.mp3]</rt></ruby> [sound:m.mp3] <ruby>B<rt>[sound:b.mp3]</rt></ruby>"
+        ' <ruby>C<rt><img src="p.png"></rt></ruby>',
+        "<hr id=answer>x",
+    ))
+    shown = display_presentation(card).front.sections[0]
+    assert shown.text == "A [audio 2] B C"
+    assert [r for _, _, r in shown.furigana] == ["[audio 1]", "[audio 3]", "[image]"]

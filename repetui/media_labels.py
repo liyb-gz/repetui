@@ -26,14 +26,15 @@ def neutral_media_labels(
     if seen is None:
         seen = Counter()
 
-    def replace(match: re.Match[str]) -> str:
-        kind = match.group(1)
-        if kind == "math image":
-            return "[math]"
-        seen[kind] += 1
-        return f"[{kind} {seen[kind]}]" if totals[kind] > 1 else f"[{kind}]"
+    return substitute(text, MEDIA_LABEL, lambda match: neutral_label(match.group(1), totals, seen))
 
-    return substitute(text, MEDIA_LABEL, replace)
+
+def neutral_label(kind: str, totals: Counter[str], seen: Counter[str]) -> str:
+    """The next display label of `kind` on a side; advances `seen`."""
+    if kind == "math image":
+        return "[math]"
+    seen[kind] += 1
+    return f"[{kind} {seen[kind]}]" if totals[kind] > 1 else f"[{kind}]"
 
 
 def neutral_label_str(value: str) -> str:
