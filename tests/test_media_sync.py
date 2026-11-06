@@ -178,3 +178,33 @@ def test_cancelled_old_task_cannot_abort_its_replacement_transfer():
         new.cancel()
         assert old.done.wait(1)
         assert new.done.wait(1)
+
+
+def test_second_cancel_returns_at_once_while_the_first_native_abort_blocks():
+    from threading import Thread
+    from time import monotonic
+
+    collection = BackgroundCollection()
+    release = Event()
+
+    def blocking_abort():
+        collection.abort_calls += 1
+        release.wait(10)
+        collection.finish.set()
+
+    collection.abort_media_sync = blocking_abort
+    worker = task(collection)
+    worker.start()
+    try:
+        assert collection.started.wait(2)
+        first = Thread(target=worker.cancel, daemon=True)
+        first.start()
+        assert worker.done.wait(2)              # the poll loop ends; cancel() is still blocked
+        started = monotonic()
+        worker.cancel()                         # e.g. Backend.close(): never a second abort
+        assert monotonic() - started < 0.5 and collection.abort_calls == 1
+        assert first.is_alive()
+    finally:
+        release.set()
+    first.join(2)
+    assert not first.is_alive() and collection.abort_calls == 1

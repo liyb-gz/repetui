@@ -5794,3 +5794,168 @@ async def test_ctrl_l_replays_modes_and_repaints_on_settings_and_sync_popup(
         assert writes == 1 and {"repaint": True, "layout": True} in calls
         release.set()
         await pilot.pause(1.5)
+
+
+class BlockingAbortCollection:
+    """Native media sync whose abort blocks until released (a stuck abort_media_sync)."""
+
+    def __init__(self) -> None:
+        self.started, self.finish, self.release = Event(), Event(), Event()
+        self.abort_calls = 0
+
+    def sync_media(self, auth) -> None:
+        self.started.set()
+
+    def media_sync_status(self):
+        from anki.sync_pb2 import MediaSyncProgress, MediaSyncStatusResponse
+
+        return MediaSyncStatusResponse(
+            active=not self.finish.is_set(), progress=MediaSyncProgress(added="Added: 0↑ 1↓")
+        )
+
+    def abort_media_sync(self) -> None:
+        self.abort_calls += 1
+        self.release.wait(10)
+        self.finish.set()
+
+
+class RealMediaBackend(FakeBackend):
+    """Owns a real MediaSyncTask and cancels it on close, as Backend does."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.collection = BlockingAbortCollection()
+        self.media_task = None
+
+    def media_sync_task(self, profile, report, *, endpoint=None):
+        from types import SimpleNamespace
+
+        from repetui.media_sync import MediaSyncTask
+
+        if self.media_task is not None:
+            self.media_task.cancel()
+        self.media_task = MediaSyncTask(
+            self.collection, profile, report,
+            auth_factory=lambda _p: SimpleNamespace(endpoint=None), poll_interval=0.01,
+        )
+        return self.media_task
+
+    def close(self) -> None:
+        if self.media_task is not None:
+            self.media_task.cancel()
+            self.media_task = None
+        super().close()
+
+
+def real_media_app(tmp_path, monkeypatch, mode=SyncOnQuit.OFF):
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
+    preferences.set_sync_on_quit(profile, mode)
+    backend = RealMediaBackend()
+    synced: list[int] = []
+    app = RepetuiApp(
+        backend, profile, preferences,
+        syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1],
+    )
+    monkeypatch.setattr(type(app), "MEDIA_CANCEL_TIMEOUT", 0.2)
+    return app, backend, synced
+
+
+async def stuck_media_cancel(app, backend, pilot) -> None:
+    """Start real media, press s, and leave its cancel blocked in the native abort."""
+    app._start_media_downloads()
+    assert backend.collection.started.wait(2)
+    await pilot.pause(0.1)
+    assert app.media_downloading
+    await pilot.press("s")
+    await pilot.pause(0.6)
+    assert not app.syncing and backend.collection.abort_calls == 1
+    assert backend.media_task.done.is_set() and not app.media_downloading
+
+
+def notices(app) -> list[str]:
+    return [str(n.message) for n in app._notifications]
+
+
+@pytest.mark.asyncio
+async def test_s_while_a_timed_out_media_cancel_is_still_running_does_not_block(
+    tmp_path, monkeypatch
+) -> None:
+    app, backend, synced = real_media_app(tmp_path, monkeypatch)
+    try:
+        async with app.run_test(size=(40, 6)) as pilot:
+            await stuck_media_cancel(app, backend, pilot)
+            await pilot.press("s")
+            await pilot.pause(0.5)
+            assert not app.syncing and synced == [] and app._sync_popup is None
+            assert backend.collection.abort_calls == 1          # no second, blocking cancel
+            assert "Media sync still stopping; try again." in notices(app)
+            backend.collection.release.set()
+            await pilot.pause(0.3)
+            await pilot.press("s")
+            await pilot.pause(1.6)
+            assert synced == [1] and not app.syncing
+    finally:
+        backend.collection.release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+async def test_quit_sync_with_a_stuck_media_cancel_arms_quit_without_blocking(
+    tmp_path, monkeypatch, mode, quit_keys
+) -> None:
+    app, backend, synced = real_media_app(tmp_path, monkeypatch, mode)
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    try:
+        async with app.run_test(size=(40, 6)) as pilot:
+            await stuck_media_cancel(app, backend, pilot)
+            app.mark_reviewed()
+            await pilot.press(*quit_keys)
+            await pilot.pause(0.5)
+            assert synced == [] and exits == [] and not app.syncing
+            assert app.quit_unsynced_armed and not app.exit_after_sync
+            assert "Not synced. Press q again to quit anyway." in notices(app)
+            await pilot.press("q")
+            await pilot.pause()
+            assert exits == [1] and backend.collection.abort_calls == 1
+    finally:
+        backend.collection.release.set()
+
+
+@pytest.mark.asyncio
+async def test_exit_with_a_stuck_media_cancel_is_bounded(tmp_path, monkeypatch) -> None:
+    from time import monotonic
+
+    app, backend, _ = real_media_app(tmp_path, monkeypatch)
+    try:
+        async with app.run_test(size=(40, 6)) as pilot:
+            await stuck_media_cancel(app, backend, pilot)
+            started = monotonic()
+            await pilot.press("q")
+            await pilot.pause(0.3)
+        assert monotonic() - started < 3 and backend.collection.abort_calls == 1
+        assert not backend.is_open
+    finally:
+        backend.collection.release.set()
+
+
+@pytest.mark.asyncio
+async def test_exit_during_active_media_waits_at_most_the_cancel_deadline(
+    tmp_path, monkeypatch
+) -> None:
+    from time import monotonic
+
+    app, backend, _ = real_media_app(tmp_path, monkeypatch)
+    try:
+        async with app.run_test(size=(40, 6)) as pilot:
+            app._start_media_downloads()
+            assert backend.collection.started.wait(2)
+            await pilot.pause(0.1)
+            started = monotonic()
+            await pilot.press("q")                         # unmount's own cancel blocks natively
+            await pilot.pause(0.3)
+        assert monotonic() - started < 3 and backend.collection.abort_calls == 1
+        assert not backend.is_open
+    finally:
+        backend.collection.release.set()

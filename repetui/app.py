@@ -3418,7 +3418,9 @@ class RepetuiApp(App[None]):
 
     def on_unmount(self) -> None:
         if self._media_task is not None:
-            self._media_task.cancel()
+            # Bounded: a native abort that never returns must not hang quit. A cancel already
+            # pending is not repeated; the collection close below never aborts a second time.
+            self._begin_media_cancel(self._media_task).wait(self.MEDIA_CANCEL_TIMEOUT)
         self.lifecycle.shutdown()
         self._instance_control.close()
         if self._completion_celebration is not None:
@@ -3524,12 +3526,24 @@ class RepetuiApp(App[None]):
         self.exit_after_sync = True
         await self.action_sync()
         if not self.syncing and self._sync_popup is None:
-            self.exit_after_sync = False  # sync never started (e.g. media would not stop)
+            # The sync never started (e.g. media would not stop): treat it as a failed sync, so
+            # a second q always quits instead of waiting on media.
+            self.exit_after_sync = False
+            if self.unsynced_reviews and not self.lifecycle.stopped:
+                self.quit_unsynced_armed = True
+                self.notify("Not synced. Press q again to quit anyway.", severity="warning")
 
     async def action_sync(self) -> None:
         if self.syncing or self.lifecycle.stopped:
             return
         if not self.lifecycle.begin_sync():  # reserve before yielding
+            return
+        if self._media_cancel_pending:
+            # A timed-out cancel is still in the native abort: the collection close of a sync
+            # would wait on it. Release at once; never start a second, blocking cancel.
+            self.lifecycle.finish_sync()
+            if not self.exit_after_sync:
+                self.notify("Media sync still stopping; try again.", severity="warning")
             return
         task = self._media_task if self.media_downloading else None
         if task is not None:
@@ -3537,31 +3551,43 @@ class RepetuiApp(App[None]):
             if not stopped:
                 # The unfinished task stays ours; _start_media_downloads waits for its cancel.
                 self.lifecycle.finish_sync()  # release the reservation; nothing transferred
-                self.notify("Media download did not stop; try again.", severity="warning")
+                if not self.exit_after_sync:
+                    self.notify("Media download did not stop; try again.", severity="warning")
                 return
             self._media_interrupted = True
         self._sync_popup = SyncPopup()
         self.push_screen(self._sync_popup, self._sync_popup_closed)
         self.call_after_refresh(self._start_sync_thread)
 
+    @property
+    def _media_cancel_pending(self) -> bool:
+        """A media cancel() that has not returned yet (e.g. after a timed-out sync attempt)."""
+        return self._media_cancel is not None and not self._media_cancel[1].is_set()
+
+    def _begin_media_cancel(self, task: MediaSyncTask) -> Event:
+        """Start cancelling `task` once, in its own daemon thread; the event is set on return.
+
+        cancel() may block on the task's start lock or in the native abort. Its own thread means
+        a cancel that never returns cannot stall the UI, a retry, or shutdown; every later caller
+        waits on this same cancel instead of starting another."""
+        pending = self._media_cancel
+        if pending is not None and pending[0] is task:
+            return pending[1]
+        finished = Event()
+
+        def cancel() -> None:
+            try:
+                task.cancel()
+            finally:
+                finished.set()
+
+        Thread(target=cancel, name="repetui-media-cancel", daemon=True).start()
+        self._media_cancel = (task, finished)
+        return finished
+
     async def _stop_media(self, task: MediaSyncTask) -> bool:
         """Cancel media and wait for it to end, under one deadline over both steps."""
-        pending = self._media_cancel
-        if pending is None or pending[0] is not task:
-            finished = Event()
-
-            def cancel() -> None:
-                try:
-                    task.cancel()
-                finally:
-                    finished.set()
-
-            # cancel() may block on the task's start lock while native sync starts. Run it
-            # in its own daemon thread so a cancel that never returns cannot stall the UI,
-            # a retry, or shutdown; a retry waits on this same cancel.
-            Thread(target=cancel, name="repetui-media-cancel", daemon=True).start()
-            pending = self._media_cancel = (task, finished)
-        finished = pending[1]
+        finished = self._begin_media_cancel(task)
         timeout = self.MEDIA_CANCEL_TIMEOUT
 
         def wait() -> bool:
@@ -3611,7 +3637,7 @@ class RepetuiApp(App[None]):
     def _start_media_downloads(self) -> None:
         if not self.backend.is_open or self.lifecycle.stopped:
             return
-        if self._media_cancel is not None and not self._media_cancel[1].is_set():
+        if self._media_cancel_pending:
             return  # a late cancel() of the old task could abort a replacement transfer
         task = self.backend.media_sync_task(
             self.profile, lambda task, snapshot: self.post_message(MediaUpdated(task, snapshot)),

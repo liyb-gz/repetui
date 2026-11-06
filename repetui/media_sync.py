@@ -62,6 +62,8 @@ class MediaSyncTask:
         self._endpoint = endpoint
         self._cancelled = Event()
         self._start_lock = Lock()
+        self._cancel_lock = Lock()
+        self._cancel_requested = False
         self._started = False
         self.done = Event()
         self.snapshot = MediaSyncSnapshot(MediaSyncStatus.STARTING)
@@ -78,7 +80,16 @@ class MediaSyncTask:
         self._thread.start()
 
     def cancel(self) -> None:
-        """Interrupt media before its owning collection is closed/replaced."""
+        """Interrupt media before its owning collection is closed/replaced.
+
+        Only the first call aborts. A later call (Backend.close, a replacement task) returns at
+        once: the abort is already in flight, and a second one could only block behind it on the
+        start lock (a stuck native abort would then hang sync or quit)."""
+        with self._cancel_lock:
+            if self._cancel_requested:
+                return
+            self._cancel_requested = True
+        self._cancelled.set()  # _run checks it under the start lock before any native start
         with self._start_lock:
             if self.done.is_set():
                 return
