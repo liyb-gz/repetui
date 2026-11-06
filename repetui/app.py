@@ -2874,7 +2874,10 @@ class SyncPopup(StatusPill):
     def finish(self, result: SyncRunResult) -> None:
         self._stop_spinner()
         outcome = result.outcome
-        if outcome.ok and result.reopen_error is None:
+        # A quit-sync whose reviews reached AnkiWeb exits even if the reopen then failed;
+        # a manual sync keeps the reopen recovery path.
+        quitting = cast("RepetuiApp", self.app).exit_after_sync
+        if outcome.ok and (result.reopen_error is None or quitting):
             message = {
                 SyncStatus.SYNCED: "[ok] synced",
                 SyncStatus.UP_TO_DATE: "[ok] up to date",

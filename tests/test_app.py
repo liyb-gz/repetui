@@ -5626,6 +5626,30 @@ async def test_conflict_resolution_exits(tmp_path, monkeypatch, mode, quit_keys,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "quit_keys"), SYNCING_QUIT_KEYS)
+async def test_quit_sync_success_exits_even_when_reopen_fails(
+    tmp_path, monkeypatch, mode, quit_keys
+) -> None:
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
+    preferences.set_sync_on_quit(profile, mode)
+    backend = ReopenFailsBackend(fail_reopens=99)
+    synced: list[int] = []
+    app = RepetuiApp(
+        backend, profile, preferences,
+        syncer=lambda _p: (synced.append(1), SyncOutcome(SyncStatus.SYNCED))[1],
+    )
+    exits: list[int] = []
+    monkeypatch.setattr(app, "exit", lambda *a, **k: exits.append(1))
+    async with app.run_test(size=(40, 6)) as pilot:
+        app.mark_reviewed()
+        await pilot.press(*quit_keys)
+        await pilot.pause(1.6)  # no Esc/Enter: the reviews reached AnkiWeb, so quit exits
+        assert synced == [1] and not backend.is_open
+        assert exits == [1] and not app.unsynced_reviews
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [SyncOnQuit.OFF, SyncOnQuit.ASK, SyncOnQuit.ON])
 async def test_failed_manual_sync_neither_arms_nor_exits(tmp_path, monkeypatch, mode) -> None:
     app, _, synced, exits = quit_app(tmp_path, monkeypatch, mode, SyncStatus.OFFLINE)
