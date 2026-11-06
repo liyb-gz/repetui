@@ -455,7 +455,8 @@ class _RenderedHTMLParser(HTMLParser):
             self._emit("`")
             frame.close_text = "`"
         elif frame is not None and (tag in {"math", "anki-mathjax"} or "mathjax" in classes):
-            frame.effect, frame.sink = "math", []
+            if not self._effects["math"]:  # a nested wrapper is part of the same expression
+                frame.effect, frame.sink = "math", []
         elif tag == "img":
             # Identity is the full source only; alt/title never decide sameness.
             label = _source_id(attributes.get("src") or "")

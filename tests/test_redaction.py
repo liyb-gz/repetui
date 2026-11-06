@@ -363,3 +363,11 @@ def test_visible_labels_are_still_promoted() -> None:
     assert [kind for kind, _, _ in _render_document("<b>Meaning:</b> x").structural_sections] == [
         "label"]
 
+
+def test_nested_math_wrappers_give_one_label() -> None:
+    from repetui.presentation import _render_document
+
+    html = '<span class="mathjax"><math><mi>x</mi></math></span>'
+    assert _render_document(html).text == "[math: x]"
+    assert [r for _, _, r in _render_document(f"<ruby>Q<rt>{html}</rt></ruby>").furigana] == [
+        "[math: x]"]
