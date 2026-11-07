@@ -483,10 +483,10 @@ async def test_native_preview_and_detail_clear_on_review_transitions_at_40x6(tmp
         assert any("a=p,i=" in part for part in emitted)
 
         emitted.clear()
-        await pilot.press("enter")  # Reveal replaces the preview placements.
-        await pilot.pause()
-        assert any("a=d,d=I,i=" in part for part in emitted)
-        assert any("a=p,i=" in part for part in emitted)
+        await pilot.press("enter")  # Reveal: the unchanged front stays put (no blink); the back
+        await pilot.pause()        # picture is below this 6-row pane, so nothing is sent yet
+        assert len(review._native_pictures) == 2
+        assert not any("a=d,d=I,i=" in part for part in emitted)
 
         emitted.clear()
         await pilot.press("v")
@@ -501,8 +501,9 @@ async def test_native_preview_and_detail_clear_on_review_transitions_at_40x6(tmp
         emitted.clear()
         await pilot.press("down", "right")
         await pilot.pause()
-        assert any("a=d,d=I,i=" in part for part in emitted)
-        assert any("a=p,i=" in part for part in emitted)
+        # the visible part of this small picture is unchanged by the pan: nothing is re-sent
+        # (the old code re-sent an identical copy, which is what made pictures blink)
+        assert not any("a=t," in part or "a=d," in part for part in emitted)
 
         emitted.clear()
         await pilot.resize_terminal(55, 10)
@@ -6083,3 +6084,48 @@ async def test_cell_pixel_size_comes_from_in_band_resize_reports(tmp_path) -> No
         app.post_message(events.Resize.from_dimensions((100, 30), (1600, 960)))
         await asyncio.sleep(0.05)
         assert app.cell_pixels == (16.0, 32.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not fonts_available(), reason="macOS system fonts")
+async def test_the_larger_front_does_not_blink_on_reveal_or_when_feedback_clears(tmp_path) -> None:
+    app, _ = make_app(tmp_path, _korean_card())
+    app.text_scale = 2.0
+    emitted: list[str] = []
+
+    async with app.run_test(size=(60, 16)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(emitted.append, enabled=True)
+        review._refresh_view()
+        await pilot.pause()
+        assert any("a=p,i=" in part for part in emitted)
+
+        emitted.clear()
+        await pilot.press("space")                               # reveal
+        await pilot.pause()
+        review._clear_rating_feedback()                          # a status line change
+        await pilot.pause()
+        assert not any("a=d," in part or "a=t," in part for part in emitted), emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not fonts_available(), reason="macOS system fonts")
+async def test_the_front_falls_back_to_text_when_native_output_fails(tmp_path) -> None:
+    app, _ = make_app(tmp_path, _korean_card())
+    app.text_scale = 2.0
+
+    def broken(_: str) -> None:
+        raise OSError("terminal gone")
+
+    async with app.run_test(size=(60, 16)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(broken, enabled=True)
+        review._refresh_view()
+        await pilot.pause()
+        await pilot.pause()
+        assert review._native.enabled is False
+        assert "소금은" in str(review.query_one("#card", Static).render())

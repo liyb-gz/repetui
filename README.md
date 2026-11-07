@@ -198,8 +198,9 @@ picture instead: the front's text (with media names already hidden) is laid out
 at 1.5×, 2× or 3× with macOS system fonts (Apple SD Gothic Neo for Hangul,
 Helvetica otherwise) and painted over its block with the same Kitty graphics
 placements. Colours, bold and underline carry over; the back side stays normal
-size. The cells underneath keep the normal-size text, so a terminal that doesn't
-show the picture still shows the card. A front too tall for the pane at that
+size. Pictures already on screen stay put when nothing about them changes (a
+reveal, a status message), so they don't blink. If writing the picture fails, the
+front is redrawn as normal text. A front too tall for the pane at that
 size stays normal, with a notice. `ctrl+l` repaints it (a re-attached terminal
 starts without pictures). It needs native output (`REPETUI_NATIVE_IMAGES=kitty`
 inside Herdr; the herdr-repetui plugin sets it when Herdr forwards graphics).

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from rich.cells import cell_len
 from rich.text import Text
 
 from repetui import large_text
@@ -89,8 +88,7 @@ def test_each_script_gets_a_font_that_has_it() -> None:
     assert large_text._family("ก") == "wide"
 
 
-def test_the_placeholder_is_the_normal_text_padded_to_the_block() -> None:
-    block = placeholder(Text("소금은 바닷물처럼\nab"), 10, 4, "bold")
+def test_the_placeholder_is_blank_and_exactly_the_block() -> None:
+    block = placeholder(10, 4)
     lines = block.plain.split("\n")
-    assert len(lines) == 4 and all(cell_len(line) == 10 for line in lines)
-    assert lines[0].startswith("소금은") and lines[2].startswith("ab")
+    assert len(lines) == 4 and all(line == " " * 10 for line in lines)

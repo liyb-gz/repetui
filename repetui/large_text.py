@@ -2,8 +2,8 @@
 
 A terminal program can't change its font size, but it can place a picture over a block of cells.
 The front's display text (already redacted) is laid out at a larger size with system fonts and
-drawn into exactly that block. The cells underneath keep the normal-size text, so a terminal that
-ignores the picture still shows the card.
+drawn into exactly that block. The cells underneath are blank: normal-size text there would flash
+whenever the picture is swapped. If native output fails, the app redraws the front as text.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
-from rich.cells import cell_len
 from rich.color import Color
 from rich.style import Style
 from rich.text import Text
@@ -230,19 +229,9 @@ def _split_lines(chars: list[tuple[str, Style]]) -> list[list[tuple[str, Style]]
     return collapsed
 
 
-def placeholder(text: Text, columns: int, rows: int, style: str | Style) -> Text:
-    """The cells under the picture: the normal-size text, wrapped and padded to the block."""
-    lines: list[str] = []
-    for hard in text.plain.split("\n"):
-        current = ""
-        for char in hard:
-            if cell_len(current + char) > columns:
-                lines.append(current)
-                current = ""
-            current += char
-        lines.append(current)
-    lines = (lines + [""] * rows)[:rows]
-    block = Text("\n".join(line + " " * (columns - cell_len(line)) for line in lines), style=style)
+def placeholder(columns: int, rows: int) -> Text:
+    """The blank cells under the picture, exactly the block's size."""
+    block = Text("\n".join(" " * columns for _ in range(rows)))
     block.overflow = "fold"
     return block
 
@@ -269,7 +258,7 @@ def expand_large_front(
     drawn = render_large_text(front, scale, width, max_rows, cell, background=background)
     if drawn is None:
         return document, False
-    block = placeholder(front, drawn.columns, drawn.rows, "bold #eee9e0")
+    block = placeholder(drawn.columns, drawn.rows)
     block.stylize(Style(meta={"repetui_native_picture": len(native_marks)}), 0, len(block))
     native_marks.append((None, drawn.columns, drawn.rows, drawn.image))
     result = document[:start]

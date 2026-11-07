@@ -67,13 +67,22 @@ async def test_standard_kitty_placement_tracks_wrapped_cells_and_scroll(
         # transmit only (a=t): a=T would also display a copy at the cursor, besides the placement
         assert any("a=t,f=100" in part for part in output)
         assert not any("a=T," in part for part in output)
-        assert re.search(r"\x1b\[1;1H\x1b_Ga=p,i=\d+,c=4,r=2,C=1", output[-1])
+        assert re.search(r"\x1b\[1;1H\x1b_Ga=p,i=\d+,p=1,c=4,r=2,C=1", output[-1])
+
+        # an unchanged repaint (e.g. a reveal or a status line change) sends nothing: no blink
+        before = len(output)
+        overlay.paint(card, scroll, [picture])
+        assert len(output) == before
 
         scroll.scroll_to(y=6, animate=False)
         await pilot.pause()
+        before = len(output)
         overlay.paint(card, scroll, [picture])
-        assert any("a=d,d=I,i=" in part for part in output)
-        assert re.search(r"\x1b\[1;1H\x1b_Ga=p,i=\d+,c=4,r=1,C=1", output[-1])
+        new = output[before:]
+        placed = [i for i, part in enumerate(new)
+                  if re.search(r"\x1b\[1;1H\x1b_Ga=p,i=\d+,p=1,c=4,r=1,C=1", part)]
+        deleted = [i for i, part in enumerate(new) if "a=d,d=I,i=" in part]
+        assert placed and deleted and max(placed) < min(deleted)   # new one up before the old goes
 
         scroll.scroll_to(y=12, animate=False)
         await pilot.pause()
@@ -102,3 +111,30 @@ async def test_failed_output_disables_native_and_leaves_character_picture(
         overlay.paint(card, app.query_one("#scroll", VerticalScroll), [NativePicture(path, 2, 2)])
         assert not overlay.enabled
         assert "AB\nCD" in str(card.render())
+
+
+@pytest.mark.asyncio
+async def test_a_moved_picture_is_placed_again_without_a_new_upload(tmp_path: Path) -> None:
+    app = App()
+    async with app.run_test(size=(20, 12)) as pilot:
+        scroll = VerticalScroll(Static(id="card"), id="scroll")
+        await app.screen.mount(scroll)
+        card = app.screen.query_one("#card", Static)
+        image = Image.new("RGB", (64, 64), "#b73524")
+        output: list[str] = []
+        overlay = NativeImageOverlay(output.append, enabled=True)
+
+        card.update(mark_native_picture(Text("####\n####"), 0))
+        await pilot.pause()
+        overlay.paint(card, scroll, [NativePicture(None, 4, 2, image)])
+        image_id = re.search(r"a=t,f=100,i=(\d+)", "".join(output)).group(1)
+
+        output.clear()
+        document = Text("one line above\n")
+        document.append_text(mark_native_picture(Text("####\n####"), 0))
+        card.update(document)
+        await pilot.pause()
+        overlay.paint(card, scroll, [NativePicture(None, 4, 2, image)])
+        assert not any("a=t," in part for part in output)            # not uploaded again
+        assert not any("a=d," in part for part in output)            # and nothing deleted
+        assert any(re.search(rf"\x1b\[2;1H\x1b_Ga=p,i={image_id},p=1,", part) for part in output)

@@ -7,6 +7,7 @@ visible cells after Textual refreshes, so a missing protocol leaves a useful car
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import os
 import secrets
@@ -121,30 +122,32 @@ def _marked_regions(widget: Widget, count: int) -> list[Region | None]:
 
 
 class NativeImageOverlay:
-    """Paint scoped standard Kitty placements over character-image rectangles."""
+    """Paint scoped standard Kitty placements over character-image rectangles.
+
+    Pictures already on screen are remembered by content. A repaint places only new or moved
+    pictures, then deletes the ones no longer wanted, so an unchanged picture never blinks."""
 
     def __init__(self, write: Callable[[str], None], *, enabled: bool) -> None:
         self.write = write
         self.enabled = enabled
-        self._ids: list[int] = []
+        self._placed: dict[tuple[bytes, int], tuple[int, Region]] = {}
         self._next_id = secrets.randbelow(2**31 - 1) + 1
 
     def clear(self) -> None:
-        ids, self._ids = self._ids, []
-        for image_id in ids:
+        placed, self._placed = self._placed, {}
+        for image_id, _ in placed.values():
             try:
                 self.write(f"\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")
             except Exception:
                 self.enabled = False
                 break
 
-    def _place(self, picture: Image.Image, target: Region) -> None:
+    def _transmit(self, picture: Image.Image) -> int:
         image_id = self._next_id
         self._next_id = (image_id % (2**31 - 1)) + 1
         buffer = io.BytesIO()
         picture.save(buffer, format="PNG")
         payload = base64.b64encode(buffer.getvalue()).decode("ascii")
-        self._ids.append(image_id)  # Include partial transmissions in later cleanup.
         # a=t only transmits; a=T would also display the image at the cursor (a second copy).
         for offset in range(0, len(payload), 4096):
             chunk = payload[offset : offset + 4096]
@@ -154,19 +157,24 @@ class NativeImageOverlay:
                 if offset == 0 else f"i={image_id},q=2,m={more}"
             )
             self.write(f"\x1b_G{header};{chunk}\x1b\\")
+        return image_id
+
+    def _place(self, image_id: int, target: Region) -> None:
+        # One placement per image (p=1): placing it again moves it instead of adding a copy.
         self.write(
             f"\x1b7\x1b[{target.y + 1};{target.x + 1}H"
-            f"\x1b_Ga=p,i={image_id},c={target.width},r={target.height},C=1,q=2\x1b\\"
+            f"\x1b_Ga=p,i={image_id},p=1,c={target.width},r={target.height},C=1,q=2\x1b\\"
             "\x1b8"
         )
 
     def paint(self, widget: Widget, viewport: Widget, pictures: Sequence[NativePicture]) -> None:
         if not self.enabled:
             return
-        self.clear()
-        if not self.enabled or not pictures:
+        if not pictures:
+            self.clear()
             return
         clip = viewport.scrollable_content_region.intersection(widget.screen.region)
+        kept: dict[tuple[bytes, int], tuple[int, Region]] = {}
         try:
             for picture, local in zip(
                 pictures, _marked_regions(widget, len(pictures)), strict=True
@@ -198,11 +206,33 @@ class NativeImageOverlay:
                     round((visible.right - full.x) * cell_x),
                     round((visible.bottom - full.y) * cell_y),
                 )
-                self._place(pixels.crop(source), visible)
+                cropped = pixels.crop(source)
+                digest = hashlib.blake2b(cropped.tobytes(), digest_size=16)
+                digest.update(repr((cropped.mode, cropped.size)).encode())
+                key = (digest.digest(), sum(1 for k in kept if k[0] == digest.digest()))
+                previous = self._placed.pop(key, None)
+                if previous is None:
+                    image_id = self._transmit(cropped)
+                    kept[key] = (image_id, visible)   # before placing: a failure still cleans up
+                    self._place(image_id, visible)
+                else:
+                    image_id, where = previous
+                    kept[key] = (image_id, visible)
+                    if where != visible:
+                        self._place(image_id, visible)
         except Exception:
             # Optional graphics must never interrupt the character review path.
+            self._placed.update(kept)
             self.clear()
             self.enabled = False
+            return
+        stale, self._placed = self._placed, kept
+        for image_id, _ in stale.values():             # only after the new ones are up
+            try:
+                self.write(f"\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")
+            except Exception:
+                self.enabled = False
+                break
 
 
 def overlay_for_app(app: App[object]) -> NativeImageOverlay:

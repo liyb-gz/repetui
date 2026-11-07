@@ -1732,9 +1732,12 @@ class NativeImageScreen(Screen[None]):
         if self._native is not None:
             self._native.clear()
 
-    def _native_invalidated(self) -> None:
+    def _native_invalidated(self, *, force: bool = False) -> None:
+        """Repaint native pictures; `force` first forgets what the terminal shows (a re-attached
+        terminal shows nothing). Otherwise the overlay moves or keeps pictures without blinking."""
         if self._native is not None:
-            self._native.clear()
+            if force:
+                self._native.clear()
             self._schedule_native_paint()
 
     def _schedule_native_paint(self) -> None:
@@ -1747,11 +1750,17 @@ class NativeImageScreen(Screen[None]):
     def _paint_native(self) -> None:
         self._native_paint_pending = False
         if self.app.screen is self and self._native is not None:
+            enabled = self._native.enabled
             self._native.paint(
                 self.query_one(self.NATIVE_CONTENT, Static),
                 self.query_one(self.NATIVE_SCROLL, ScrollableContainer),
                 self._native_pictures,
             )
+            if enabled and not self._native.enabled:
+                self._native_failed()
+
+    def _native_failed(self) -> None:
+        """Native output just failed: content drawn only as a picture must be redrawn as text."""
 
 
 class ImageDetailScreen(NativeImageScreen):
@@ -2077,10 +2086,12 @@ class ReviewScreen(NativeImageScreen):
         )
 
     def _refresh_view(self, *, reset_scroll: bool = True) -> None:
-        if self._native is not None:
-            self._native.clear()
+        # Native pictures are not cleared here: the paint scheduled below keeps unchanged ones and
+        # swaps the rest, so a reveal or a status change doesn't make them blink.
         self._native_pictures = ()
         if self.repetui.syncing or self._refresh_failed:
+            if self._native is not None:
+                self._native.clear()
             return
         self._media_active_rendered = self.repetui.media_downloading
         self._pending_pictures = ()
@@ -2095,6 +2106,8 @@ class ReviewScreen(NativeImageScreen):
             complete.append("\nNothing due. You showed up.", style="#aaa49b")
             content.update(complete)
             self._refresh_action_row(actions)
+            if self._native is not None:
+                self._native.clear()
             return
 
         renderable_width = content.size.width or self.size.width
@@ -2290,6 +2303,10 @@ class ReviewScreen(NativeImageScreen):
         self._large_front_notice = None
         self._refresh_or_recover(reset_scroll=False)
         self.notify(f"text {scale_label(self.repetui.text_scale)}", timeout=1.5)
+
+    def _native_failed(self) -> None:
+        if self.repetui.text_scale > 1 and self.is_mounted:
+            self._refresh_or_recover(reset_scroll=False)   # the front falls back to normal text
 
     def _large_front_enabled(self) -> bool:
         return self.repetui.text_scale > 1 and self._native is not None and self._native.enabled
@@ -3543,7 +3560,7 @@ class RepetuiApp(App[None]):
             replay_terminal_modes(driver)
         self.screen.refresh(repaint=True, layout=True)
         if isinstance(self.screen, NativeImageScreen):
-            self.screen._native_invalidated()  # a re-attached terminal has no pictures yet
+            self.screen._native_invalidated(force=True)  # a re-attached terminal shows none yet
 
     def action_quit(self) -> None:
         if isinstance(self.screen, SyncOnQuitPrompt):
