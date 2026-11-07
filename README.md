@@ -36,6 +36,8 @@ repetui --profile PROFILE_NAME
 `repetui` looks for your collection in Anki's data directory:
 `~/Library/Application Support/Anki2` on macOS and `~/.local/share/Anki2`
 elsewhere. Set `REPETUI_ANKI_HOME` to use a different directory.
+`REPETUI_HERDR_KEYS` (set by the herdr-repetui plugin, for example
+`bottom=prefix+a;side=prefix+shift+a`) adds the herdr keys to the help screen.
 
 ### Collection already in use
 
@@ -169,9 +171,13 @@ play in order; `p` replays that side, and moving to another card stops playback.
 Playback uses `mpv`, `ffplay`, `afplay` (macOS), or `paplay` if available.
 `mpv` or `ffplay` is recommended for broad audio format support; `paplay`
 supports formats available through the system's libsndfile. Missing media or unavailable playback shows a
-warning and leaves review usable. Media file names are never shown: sound and
-pictures appear as `[audio]` and `[image]`, numbered per card side
-(`[audio 1]`, `[audio 2]`) when a side has more than one.
+warning and leaves review usable. Media file names are never shown: sound,
+pictures, video and math images appear as `[audio]`, `[image]`, `[video]` and
+`[math]`, numbered per card side (`[audio 1]`, `[audio 2]`) when a side has more
+than one, including in ruby readings. As a final safeguard, any referenced media
+file name that would still reach the screen (for example, typed into a field) is
+shown as `[media]`. A plain word is never hidden, even when the audio is named
+after it (`hallo.mp3` hides `hallo.mp3`, not `hallo`).
 
 When images are on (**Images at start** is Off by default; `i` turns them on for
 the session), local raster pictures appear as colored-character previews within
@@ -233,7 +239,9 @@ Choices are remembered per note type and card template, so long explanations
 and mnemonics can stay one keypress away without taking over every card.
 
 Template JavaScript, typed-answer grading, CSS layout, and video playback are
-not executed. Card creation, editing, and statistics are also outside the
+not executed. A card type whose sides are built by JavaScript at review time
+(for example, one that picks a random example sentence) can show
+`(empty card)`; adapt it under `card fields`, or review it in Anki Desktop. Card creation, editing, and statistics are also outside the
 current scope.
 
 ### Acknowledgements
