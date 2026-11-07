@@ -64,8 +64,9 @@ async def test_standard_kitty_placement_tracks_wrapped_cells_and_scroll(
         scroll.scroll_to(y=5, animate=False)
         await pilot.pause()
         overlay.paint(card, scroll, [picture])
-        assert any("a=T,f=100" in part for part in output)
-        assert not any("a=t," in part for part in output)
+        # transmit only (a=t): a=T would also display a copy at the cursor, besides the placement
+        assert any("a=t,f=100" in part for part in output)
+        assert not any("a=T," in part for part in output)
         assert re.search(r"\x1b\[1;1H\x1b_Ga=p,i=\d+,c=4,r=2,C=1", output[-1])
 
         scroll.scroll_to(y=6, animate=False)

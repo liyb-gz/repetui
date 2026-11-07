@@ -145,11 +145,12 @@ class NativeImageOverlay:
         picture.save(buffer, format="PNG")
         payload = base64.b64encode(buffer.getvalue()).decode("ascii")
         self._ids.append(image_id)  # Include partial transmissions in later cleanup.
+        # a=t only transmits; a=T would also display the image at the cursor (a second copy).
         for offset in range(0, len(payload), 4096):
             chunk = payload[offset : offset + 4096]
             more = int(offset + 4096 < len(payload))
             header = (
-                f"a=T,f=100,i={image_id},q=2,m={more}"
+                f"a=t,f=100,i={image_id},q=2,m={more}"
                 if offset == 0 else f"i={image_id},q=2,m={more}"
             )
             self.write(f"\x1b_G{header};{chunk}\x1b\\")
