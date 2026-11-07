@@ -14,6 +14,7 @@ from .card_text import annotated, inline_readings
 from .card_text import strip as _strip_text
 from .card_text import substitute as _replace_text
 from .controls import ReviewAction, ReviewControls
+from .large_text import LARGE_FRONT_META
 from .media_labels import neutral_label_str
 from .media_names import scrub
 from .preferences import AnswerLayout, Preferences, SectionMode
@@ -159,13 +160,19 @@ def _header(
     current_queue: ReviewQueue | None,
     show_readings: bool,
     media_active: bool = False,
+    large_front: bool = False,
 ) -> Text:
     """Build the first Flow line, shedding metadata before card content."""
     front, multiple_front_blocks = _front_content(presentation, show_readings)
+    if large_front and front:
+        # The whole front on its own lines, tagged so the app can draw it as one larger block.
+        front.stylize(Style(meta={LARGE_FRONT_META: True}), 0, len(front))
     first_break = front.plain.find("\n")
     first_front = front if first_break < 0 else front[:first_break]
     remaining_front = Text() if first_break < 0 else front[first_break + 1:]
-    if any("repetui_image" in getattr(span.style, "meta", {}) for span in first_front.spans):
+    if large_front or any(
+        "repetui_image" in getattr(span.style, "meta", {}) for span in first_front.spans
+    ):
         first_front = Text()
         remaining_front = front
     split = f"{counts.new}/{counts.learning}/{counts.review}"
@@ -234,7 +241,7 @@ def _header(
     result = first_front.copy()
     result.overflow = "fold"
     if template := optional["template"]:
-        result.append(f"  · {template}", style="#817d76")
+        result.append(f"  · {template}" if result.plain else template, style="#817d76")
 
     right = right_text()
     right_width = right.cell_len
@@ -377,6 +384,7 @@ def compose_review(
     answer_layout: AnswerLayout = AnswerLayout.COMPACT,
     show_readings: bool = False,
     media_active: bool = False,
+    large_front: bool = False,
 ) -> Text:
     """Compose the complete visible review document without mutating state."""
     presentation = display_presentation(presentation)
@@ -387,7 +395,8 @@ def compose_review(
             for state, section in zip(sections, redacted, strict=True)
         )
     result = _header(
-        presentation, deck_name, counts, width, current_queue, show_readings, media_active
+        presentation, deck_name, counts, width, current_queue, show_readings, media_active,
+        large_front,
     )
     if revealed:
         result.append("\n")

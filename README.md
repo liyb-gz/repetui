@@ -73,6 +73,7 @@ Retry. Recovery never deletes collection, lock, WAL, or journal files.
 | Review | `p` | Replay recorded sound on the visible card side |
 | Review | `m` | Toggle audio on or off for this session |
 | Review | `i` | Toggle images on or off for this session |
+| Review | `z` | Front side text size for this session: normal, 1.5×, 2×, 3× (needs Kitty graphics; see below) |
 | Review | `v` | View visible pictures larger; Tab switches pictures, arrows pan, Escape returns |
 | Review | `u`, `b`, `x`, `f` | Undo, bury, suspend, flag |
 | Card-field setup | `Space`, `J` / `K`, `a`, `p`, `v`, `Enter` | Change role, reorder, suggest a layout, preview, flip question/answer, save |
@@ -97,6 +98,7 @@ The Controls tab also holds three profile-scoped settings:
 | --- | --- | --- | --- |
 | Audio at start | On / Off | On | Whether recorded sound is on when `repetui` starts; `m` toggles it for the session |
 | Images at start | On / Off | Off | Whether pictures are shown (rather than `[image]`) when `repetui` starts; `i` toggles it for the session |
+| Text size at start | Normal / 1.5× / 2× / 3× | Normal | Front side text size when `repetui` starts; `z` cycles it for the session |
 | Sync on quit | Off / Ask / On | On | What `q` does when you have unsynced reviews |
 
 With **Sync on quit** On, `q` syncs your reviews first and quits when the sync
@@ -190,6 +192,17 @@ terminal multiplexers, including Herdr, because graphics forwarding varies;
 set `REPETUI_NATIVE_IMAGES=kitty` to opt in when forwarding is configured, or
 `REPETUI_NATIVE_IMAGES=off` to keep only the portable characters. This setting
 does not query the terminal or consume a review key.
+
+A terminal program can't change its font size, so `z` draws the front side as a
+picture instead: the front's text (with media names already hidden) is laid out
+at 1.5×, 2× or 3× with macOS system fonts (Apple SD Gothic Neo for Hangul,
+Helvetica otherwise) and painted over its block with the same Kitty graphics
+placements. Colours, bold and underline carry over; the back side stays normal
+size. The cells underneath keep the normal-size text, so a terminal that doesn't
+show the picture still shows the card. A front too tall for the pane at that
+size stays normal, with a notice. `ctrl+l` repaints it (a re-attached terminal
+starts without pictures). It needs native output (`REPETUI_NATIVE_IMAGES=kitty`
+inside Herdr; the herdr-repetui plugin sets it when Herdr forwards graphics).
 
 Question pictures appear immediately; answer pictures appear after Reveal. The card remains
 scrollable in a narrow pane. Missing, damaged, or unsupported pictures show a

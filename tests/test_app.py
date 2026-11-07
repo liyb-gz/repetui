@@ -5,6 +5,7 @@ from threading import Event, Timer
 
 import pytest
 from PIL import Image, ImageDraw
+from textual import events
 from textual.containers import ScrollableContainer, VerticalScroll
 from textual.widgets import Input, ListItem, Static
 from textual.widgets._toast import Toast
@@ -49,6 +50,7 @@ from repetui.config import ProfilePaths
 from repetui.controls import ReviewAction, ReviewControls
 from repetui.deck_tree import VisibleDeckRow
 from repetui.help_text import build_help
+from repetui.large_text import fonts_available
 from repetui.media_sync import MediaSyncSnapshot, MediaSyncStatus
 from repetui.native_images import NativeImageOverlay
 from repetui.preferences import (
@@ -2061,7 +2063,7 @@ async def test_undo_restores_the_final_rated_card_and_refreshes_counts(tmp_path)
 @pytest.mark.asyncio
 async def test_saved_review_binding_routes_immediately_after_app_start(tmp_path) -> None:
     preferences = JsonPreferences(tmp_path / "preferences.json")
-    controls = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    controls = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
     profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
     preferences.set_review_controls(profile, controls)
     app, backend = make_app(tmp_path, preferences=preferences)
@@ -2076,7 +2078,7 @@ async def test_saved_review_binding_routes_immediately_after_app_start(tmp_path)
         assert app.screen is review
         assert backend.undo_calls == 0
 
-        await pilot.press("z")
+        await pilot.press("w")
         assert isinstance(app.screen, OperationStatusPill)
         assert backend.undo_calls == 1
 
@@ -2758,7 +2760,7 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
         assert controls.display is True
         assert controls.region == (0, 2, 40, 3)
         rows = list(controls.children)
-        assert len(rows) == 20
+        assert len(rows) == len(ReviewAction) + 5
         rendered_rows = [
             (
                 str(row.query_one(".control-label").render()),
@@ -2783,9 +2785,11 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
             ("Toggle audio", "m"),
             ("Toggle images", "i"),
             ("Media progress", "S"),
+            ("Text size", "z"),
             ("Action feedback duration", "Normal"),
             ("Audio at start", "On"),
             ("Images at start", "Off"),
+            ("Text size at start", "Normal"),
             ("Sync on quit", "On"),
         ]
         assert settings.query_one("#settings-footer").region == (0, 5, 40, 1)
@@ -2861,11 +2865,11 @@ async def test_action_feedback_duration_cycles_in_settings_and_recovers_from_wri
     app, _ = make_app(tmp_path, preferences=preferences)
 
     async with app.run_test(size=(40, 6)) as pilot:
-        # G lands on the last row; the duration row now sits three rows above it
-        await pilot.press("enter", "?", "h", "G", "k", "k", "k")
+        # G lands on the last row; the duration row now sits four rows above it
+        await pilot.press("enter", "?", "h", "G", "k", "k", "k", "k")
         settings = app.screen
         assert isinstance(settings, SettingsScreen)
-        row = settings.query_one("#settings-controls").children[-4]
+        row = settings.query_one("#settings-controls").children[-5]
         assert str(row.query_one(".control-label").render()) == (
             "Action feedback duration"
         )
@@ -3055,13 +3059,13 @@ async def test_non_conflicting_control_rebind_saves_and_routes_immediately(tmp_p
             "[?] Undo · press key"
         )
 
-        await pilot.press("z")
+        await pilot.press("w")
 
         undo_row = settings.query_one("#settings-controls").children[5]
-        assert str(undo_row.query_one(".control-binding").render()) == "z"
-        assert preferences.review_controls(app.profile).binding(ReviewAction.UNDO) == "z"
+        assert str(undo_row.query_one(".control-binding").render()) == "w"
+        assert preferences.review_controls(app.profile).binding(ReviewAction.UNDO) == "w"
 
-        await pilot.press("escape", "enter", "3", "z")
+        await pilot.press("escape", "enter", "3", "w")
         assert isinstance(app.screen, OperationStatusPill)
         assert backend.undo_calls == 1
 
@@ -3103,7 +3107,7 @@ async def test_control_conflict_requires_confirmation_and_leaves_displaced_unbou
 async def test_backspace_restores_selected_control_default_immediately(tmp_path) -> None:
     preferences = JsonPreferences(tmp_path / "preferences.json")
     profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
-    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
     preferences.set_review_controls(profile, customized)
     app, backend = make_app(tmp_path, preferences=preferences)
 
@@ -3116,7 +3120,7 @@ async def test_backspace_restores_selected_control_default_immediately(tmp_path)
         assert app.review_controls.binding(ReviewAction.UNDO) == "u"
         assert preferences.review_controls(profile).binding(ReviewAction.UNDO) == "u"
 
-        await pilot.press("escape", "enter", "3", "z")
+        await pilot.press("escape", "enter", "3", "w")
         review = app.screen
         assert isinstance(review, ReviewScreen)
         assert backend.undo_calls == 0
@@ -3159,7 +3163,7 @@ async def test_failed_control_write_preserves_the_active_mapping(
 ) -> None:
     preferences = JsonPreferences(tmp_path / "preferences.json")
     profile = ProfilePaths(Path("/tmp"), "test", Path("/tmp/collection.anki2"))
-    original = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    original = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
     preferences.set_review_controls(profile, original)
     app, _ = make_app(tmp_path, preferences=preferences)
 
@@ -3180,7 +3184,7 @@ async def test_failed_control_write_preserves_the_active_mapping(
         assert app.review_controls == original
         assert preferences.review_controls(profile) == original
         undo_row = settings.query_one("#settings-controls").children[5]
-        assert str(undo_row.query_one(".control-binding").render()) == "z"
+        assert str(undo_row.query_one(".control-binding").render()) == "w"
 
 
 @pytest.mark.asyncio
@@ -3294,9 +3298,9 @@ async def test_deck_settings_exposes_controls_and_explains_sections_scope(
         assert empty.display is True
         assert str(empty.render()) == "review a card to configure its sections"
 
-        await pilot.press("h", "j", "j", "j", "j", "j", "enter", "z")
-        assert app.review_controls.binding(ReviewAction.UNDO) == "z"
-        assert preferences.review_controls(app.profile).binding(ReviewAction.UNDO) == "z"
+        await pilot.press("h", "j", "j", "j", "j", "j", "enter", "w")
+        assert app.review_controls.binding(ReviewAction.UNDO) == "w"
+        assert preferences.review_controls(app.profile).binding(ReviewAction.UNDO) == "w"
 
         await pilot.press("?")
         assert isinstance(app.screen, DeckScreen)
@@ -3349,12 +3353,12 @@ async def test_help_tab_follows_rebinding(tmp_path) -> None:
         settings._show_tab("controls")
         await pilot.pause()
         settings._apply_review_controls(
-            app.review_controls.with_binding(ReviewAction.TOGGLE_AUDIO, "z")
+            app.review_controls.with_binding(ReviewAction.TOGGLE_AUDIO, "w")
         )
         await pilot.pause()
         text = str(settings.query_one("#settings-help-text", Static).render())
         assert any(
-            line.strip().startswith("z") and "toggle audio" in line
+            line.strip().startswith("w") and "toggle audio" in line
             for line in text.splitlines()
         )
 
@@ -3373,7 +3377,7 @@ async def test_deck_sync_follows_the_rebound_sync_key(tmp_path) -> None:
     async with app.run_test(size=(40, 6)) as pilot:
         try:
             app.save_review_controls(
-                app.review_controls.with_binding(ReviewAction.SYNC, "z")
+                app.review_controls.with_binding(ReviewAction.SYNC, "w")
             )
             assert isinstance(app.screen, DeckScreen)
             await pilot.press("s")
@@ -3381,7 +3385,7 @@ async def test_deck_sync_follows_the_rebound_sync_key(tmp_path) -> None:
             assert not started.is_set()
             assert isinstance(app.screen, DeckScreen)
 
-            await pilot.press("z")
+            await pilot.press("w")
             assert started.wait(timeout=1)
             await pilot.pause()
             assert isinstance(app.screen, SyncPopup)
@@ -3451,7 +3455,7 @@ async def test_controls_tab_rows_are_one_line_tall_at_40x24(tmp_path) -> None:
         settings._show_tab("controls")
         await pilot.pause()
         rows = list(settings.query_one("#settings-controls").children)
-        assert len(rows) == len(ReviewAction) + 4
+        assert len(rows) == len(ReviewAction) + 5
         assert [row.region.height for row in rows] == [1] * len(rows)
 
 
@@ -5959,3 +5963,123 @@ async def test_exit_during_active_media_waits_at_most_the_cancel_deadline(
         assert not backend.is_open
     finally:
         backend.collection.release.set()
+
+
+def _korean_card() -> RawCardContent:
+    return RawCardContent(
+        CardTemplateIdentity(1, "Korean", 0, "Card"),
+        "소금은 바닷물처럼 짠맛이에요.",
+        "<hr id=answer>Salt is salty like seawater.",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not fonts_available(), reason="macOS system fonts")
+async def test_z_draws_the_front_larger_as_one_native_picture_and_cycles_back(tmp_path) -> None:
+    app, _ = make_app(tmp_path, _korean_card())
+    emitted: list[str] = []
+
+    async with app.run_test(size=(60, 16)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(emitted.append, enabled=True)
+
+        for label in ("1.5×", "2×", "3×"):
+            emitted.clear()
+            await pilot.press("z")
+            await pilot.pause()
+            assert app.text_scale == {"1.5×": 1.5, "2×": 2.0, "3×": 3.0}[label]
+            assert len(review._native_pictures) == 1
+            picture = review._native_pictures[0]
+            assert picture.path is None and picture.image is not None
+            assert picture.rows >= 2 and any("a=p,i=" in part for part in emitted)
+
+        await pilot.press("z")                                  # back to normal
+        await pilot.pause()
+        assert app.text_scale == 1.0 and review._native_pictures == ()
+
+
+@pytest.mark.asyncio
+async def test_z_explains_itself_when_the_terminal_cannot_show_pictures(tmp_path) -> None:
+    app, _ = make_app(tmp_path, _korean_card())
+
+    async with app.run_test(size=(60, 16)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(lambda _: None, enabled=False)
+        await pilot.press("z")
+        await pilot.pause()
+        assert app.text_scale == 1.0
+        assert any("Kitty graphics" in str(n.message) for n in app._notifications)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not fonts_available(), reason="macOS system fonts")
+async def test_a_front_too_tall_for_the_bar_stays_normal_with_one_notice(tmp_path) -> None:
+    long_front = RawCardContent(
+        CardTemplateIdentity(1, "Korean", 0, "Card"),
+        "소금은 바닷물처럼 짠맛이에요. " * 6, "<hr id=answer>a",
+    )
+    app, _ = make_app(tmp_path, long_front)
+    app.text_scale = 2.0
+
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(lambda _: None, enabled=True)
+        review._refresh_view()
+        await pilot.resize_terminal(41, 6)                       # a re-render does not repeat it
+        await pilot.pause()
+        assert review._native_pictures == ()
+        notices = [n for n in app._notifications if "too long" in str(n.message)]
+        assert len(notices) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not fonts_available(), reason="macOS system fonts")
+async def test_ctrl_l_repaints_the_larger_front_for_a_reattached_terminal(tmp_path) -> None:
+    app, _ = make_app(tmp_path, _korean_card())
+    app.text_scale = 2.0
+    emitted: list[str] = []
+
+    async with app.run_test(size=(60, 16)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        review._native = NativeImageOverlay(emitted.append, enabled=True)
+        review._refresh_view()
+        await pilot.pause()
+        emitted.clear()
+        await pilot.press("ctrl+l")
+        await pilot.pause()
+        assert any("a=p,i=" in part for part in emitted)
+
+
+@pytest.mark.asyncio
+async def test_text_size_at_start_cycles_in_settings_and_applies_on_start(tmp_path) -> None:
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    app, _ = make_app(tmp_path, preferences=preferences)
+    async with app.run_test(size=(40, 6)) as pilot:
+        await pilot.press("enter", "?", "h", "G", "k")
+        settings = app.screen
+        assert isinstance(settings, SettingsScreen)
+        row = settings.query_one("#settings-controls").children[-2]
+        assert str(row.query_one(".control-label").render()) == "Text size at start"
+        for expected in ("1.5×", "2×", "3×", "Normal", "1.5×"):
+            await pilot.press("space")
+            assert str(row.query_one(".control-binding").render()) == expected
+    assert preferences.text_size_at_start(app.profile) == 1.5
+    restarted, _ = make_app(tmp_path, preferences=JsonPreferences(tmp_path / "preferences.json"))
+    assert restarted.text_scale == 1.5
+
+
+@pytest.mark.asyncio
+async def test_cell_pixel_size_comes_from_in_band_resize_reports(tmp_path) -> None:
+    app, _ = make_app(tmp_path)
+    async with app.run_test(size=(40, 6)):
+        app.post_message(events.Resize.from_dimensions((100, 30), (1600, 960)))
+        await asyncio.sleep(0.05)
+        assert app.cell_pixels == (16.0, 32.0)

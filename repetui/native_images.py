@@ -12,7 +12,7 @@ import os
 import secrets
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,9 +29,12 @@ from .images import _MAX_PIXELS, ImagePreviewError
 
 @dataclass(frozen=True)
 class NativePicture:
-    path: Path
+    """A card picture (`path`), or a picture already drawn for its block (`image`)."""
+
+    path: Path | None
     columns: int
     rows: int
+    image: Image.Image | None = field(default=None, compare=False, repr=False)
 
 
 def kitty_placement_available(environ: Mapping[str, str] | None = None) -> bool:
@@ -181,12 +184,18 @@ class NativeImageOverlay:
                 visible = full.intersection(clip)
                 if not visible.width or not visible.height:
                     continue
-                pixels = _picture_pixels(picture.path, full.width, full.height)
+                if picture.image is not None:
+                    pixels = picture.image
+                elif picture.path is not None:
+                    pixels = _picture_pixels(picture.path, full.width, full.height)
+                else:
+                    continue
+                cell_x, cell_y = pixels.width / full.width, pixels.height / full.height
                 source = (
-                    (visible.x - full.x) * 8,
-                    (visible.y - full.y) * 16,
-                    (visible.right - full.x) * 8,
-                    (visible.bottom - full.y) * 16,
+                    round((visible.x - full.x) * cell_x),
+                    round((visible.y - full.y) * cell_y),
+                    round((visible.right - full.x) * cell_x),
+                    round((visible.bottom - full.y) * cell_y),
                 )
                 self._place(pixels.crop(source), visible)
         except Exception:

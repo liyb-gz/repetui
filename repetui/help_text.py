@@ -10,7 +10,7 @@ _WIDTH = 9
 # A 40-column pane leaves 39 for text: the help scrollbar takes one column.
 _MAX_COLUMNS = 39
 # Help-only wording; ReviewAction.label stays the short settings-row label.
-_HELP_LABELS = {ReviewAction.FLAG: "flag (then 0–7)"}
+_HELP_LABELS = {ReviewAction.FLAG: "flag (then 0–7)", ReviewAction.TEXT_SIZE: "front text size"}
 
 
 def _line(key: str, label: str) -> str:

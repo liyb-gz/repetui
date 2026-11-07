@@ -324,12 +324,12 @@ def test_review_controls_survive_restart_and_are_isolated_by_profile(tmp_path) -
     whskr = profile(tmp_path / "Anki2")
     work = profile(tmp_path / "Anki2", "work")
     preferences = JsonPreferences(path)
-    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
 
     preferences.set_review_controls(whskr, customized)
 
     restarted = JsonPreferences(path)
-    assert restarted.review_controls(whskr).binding(ReviewAction.UNDO) == "z"
+    assert restarted.review_controls(whskr).binding(ReviewAction.UNDO) == "w"
     assert restarted.review_controls(work) == ReviewControls.defaults()
 
 
@@ -428,7 +428,7 @@ def test_failed_review_control_write_preserves_active_and_saved_mapping(
     path = tmp_path / "preferences.json"
     whskr = profile(tmp_path / "Anki2")
     preferences = JsonPreferences(path)
-    original = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    original = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
     preferences.set_review_controls(whskr, original)
 
     def fail_replace(_source, _destination):
@@ -515,3 +515,25 @@ def test_invalid_saved_sync_on_quit_falls_back(tmp_path) -> None:
     text = path.read_text().replace('"ask"', '"sometimes"')
     path.write_text(text)
     assert JsonPreferences(path).sync_on_quit(profile) is SyncOnQuit.ON
+
+
+@pytest.mark.parametrize("saved,expected", [
+    (1.5, 1.5), (2, 2.0), (3.0, 3.0), (2.5, 1.0), ("2", 1.0), (True, 1.0), (None, 1.0),
+])
+def test_text_size_at_start_reads_only_known_scales(tmp_path, saved, expected) -> None:
+    store = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(tmp_path, "p", tmp_path / "collection.anki2")
+    store.set_text_size_at_start(profile, 2.0)
+    data = json.loads((tmp_path / "preferences.json").read_text())
+    for value in data["profiles"].values():
+        value["text_size_at_start"] = saved
+    (tmp_path / "preferences.json").write_text(json.dumps(data))
+    assert JsonPreferences(tmp_path / "preferences.json").text_size_at_start(profile) == expected
+
+
+def test_normal_text_size_is_not_stored(tmp_path) -> None:
+    store = JsonPreferences(tmp_path / "preferences.json")
+    profile = ProfilePaths(tmp_path, "p", tmp_path / "collection.anki2")
+    store.set_text_size_at_start(profile, 3.0)
+    store.set_text_size_at_start(profile, 1.0)
+    assert "text_size_at_start" not in (tmp_path / "preferences.json").read_text()

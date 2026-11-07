@@ -11,11 +11,11 @@ def test_every_review_action_is_listed() -> None:
 
 
 def test_rebound_key_is_shown() -> None:
-    controls = ReviewControls.defaults().with_binding(ReviewAction.TOGGLE_AUDIO, "z")
+    controls = ReviewControls.defaults().with_binding(ReviewAction.TOGGLE_AUDIO, "w")
     line = next(
         row for row in build_help(controls, None).splitlines() if "toggle audio" in row
     )
-    assert line.strip().startswith("z")
+    assert line.strip().startswith("w")
 
 
 def test_unbound_action_shows_unbound() -> None:

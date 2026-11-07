@@ -23,6 +23,7 @@ class ReviewAction(str, Enum):
     TOGGLE_AUDIO = "toggle_audio"
     TOGGLE_IMAGES = "toggle_images"
     MEDIA_PROGRESS = "media_progress"
+    TEXT_SIZE = "text_size"
 
     @property
     def label(self) -> str:
@@ -43,6 +44,7 @@ class ReviewAction(str, Enum):
             ReviewAction.TOGGLE_AUDIO: "Toggle audio",
             ReviewAction.TOGGLE_IMAGES: "Toggle images",
             ReviewAction.MEDIA_PROGRESS: "Media progress",
+            ReviewAction.TEXT_SIZE: "Text size",
         }[self]
 
 
@@ -63,6 +65,7 @@ DEFAULT_REVIEW_BINDINGS: dict[ReviewAction, str] = {
     ReviewAction.TOGGLE_AUDIO: "m",
     ReviewAction.TOGGLE_IMAGES: "i",
     ReviewAction.MEDIA_PROGRESS: "S",
+    ReviewAction.TEXT_SIZE: "z",
 }
 
 FIXED_REVIEW_KEYS = frozenset(
@@ -117,6 +120,7 @@ class ReviewControls:
         for action in (
             ReviewAction.READINGS, ReviewAction.REPLAY_AUDIO, ReviewAction.VIEW_IMAGE,
             ReviewAction.TOGGLE_AUDIO, ReviewAction.TOGGLE_IMAGES, ReviewAction.MEDIA_PROGRESS,
+            ReviewAction.TEXT_SIZE,
         ):
             if action.value not in saved and any(
                 key == DEFAULT_REVIEW_BINDINGS[action]

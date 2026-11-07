@@ -13,6 +13,7 @@ from typing import Protocol
 
 from .config import ProfilePaths
 from .controls import ReviewControls
+from .large_text import SCALES as TEXT_SCALES
 from .presentation import CardTemplateIdentity, TemplateFieldProfile
 
 
@@ -110,6 +111,10 @@ class Preferences(Protocol):
     def images_at_start(self, profile: ProfilePaths) -> bool: ...
 
     def set_images_at_start(self, profile: ProfilePaths, enabled: bool) -> None: ...
+
+    def text_size_at_start(self, profile: ProfilePaths) -> float: ...
+
+    def set_text_size_at_start(self, profile: ProfilePaths, scale: float) -> None: ...
 
     def sync_on_quit(self, profile: ProfilePaths) -> SyncOnQuit: ...
 
@@ -329,6 +334,17 @@ class JsonPreferences:
                 saved_profile["images_at_start"] = True
             else:
                 saved_profile.pop("images_at_start", None)
+
+    def text_size_at_start(self, profile: ProfilePaths) -> float:
+        saved = self._profiles.get(self._profile_key(profile), {}).get("text_size_at_start", 1.0)
+        return float(saved) if saved in TEXT_SCALES and not isinstance(saved, bool) else 1.0
+
+    def set_text_size_at_start(self, profile: ProfilePaths, scale: float) -> None:
+        with self._edit(profile=profile) as saved_profile:
+            if scale in TEXT_SCALES and scale != 1.0:
+                saved_profile["text_size_at_start"] = scale
+            else:
+                saved_profile.pop("text_size_at_start", None)
 
     def sync_on_quit(self, profile: ProfilePaths) -> SyncOnQuit:
         saved_profile = self._profiles.get(self._profile_key(profile), {})

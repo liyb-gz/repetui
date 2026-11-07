@@ -10,6 +10,7 @@ from repetui.flow import (
     compose_review,
     section_states,
 )
+from repetui.large_text import LARGE_FRONT_META
 from repetui.preferences import AnswerLayout, JsonPreferences, SectionMode
 from repetui.presentation import (
     CardTemplateIdentity,
@@ -652,3 +653,21 @@ def test_review_and_preview_share_fold_selection_without_temporary_expansion(tmp
     for section in (first, second):
         preferences.set_mode(presentation.identity, section.id, SectionMode.SHOW)
     assert not any(state.selected for state in section_states(presentation, preferences, 3))
+
+
+def test_large_front_goes_below_the_header_tagged_as_one_block() -> None:
+    presentation = present_card(RawCardContent(
+        CardTemplateIdentity(1, "Basic", 0, "Forward"), "박히다", "<hr id=answer>to be stuck",
+    ))
+    normal = compose_review(presentation, "Korean", DueCounts(1, 0, 0), 60, revealed=False)
+    assert normal.plain.startswith("박히다")
+    large = compose_review(presentation, "Korean", DueCounts(1, 0, 0), 60, revealed=False,
+                           large_front=True)
+    first, rest = large.plain.split("\n", 1)
+    assert first.startswith("Forward") and "박히다" not in first   # no stray "  · " separator
+    tagged = [
+        span for span in large.spans
+        if (getattr(span.style, "meta", None) or {}).get(LARGE_FRONT_META)
+    ]
+    start, end = min(s.start for s in tagged), max(s.end for s in tagged)
+    assert large.plain[start:end] == "박히다"

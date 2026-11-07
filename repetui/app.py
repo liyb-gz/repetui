@@ -65,6 +65,7 @@ from .images import (
     render_image_detail,
     resolve_local_image,
 )
+from .large_text import expand_large_front, next_scale, scale_label
 from .lifecycle import CollectionLifecycle, SyncRunResult
 from .media_sync import MediaSyncSnapshot, MediaSyncStatus, MediaSyncTask
 from .native_images import NativeImageOverlay, NativePicture, mark_native_picture, overlay_for_app
@@ -1252,6 +1253,7 @@ class SettingsScreen(Screen[None]):
                 ActionFeedbackDurationSettingItem(),
                 ProfileSettingItem("audio_at_start", "Audio at start"),
                 ProfileSettingItem("images_at_start", "Images at start"),
+                ProfileSettingItem("text_size_at_start", "Text size at start"),
                 ProfileSettingItem("sync_on_quit", "Sync on quit"),
                 id="settings-controls",
             ),
@@ -1297,6 +1299,7 @@ class SettingsScreen(Screen[None]):
         values = {
             "audio_at_start": "On" if prefs.audio_at_start(profile) else "Off",
             "images_at_start": "On" if prefs.images_at_start(profile) else "Off",
+            "text_size_at_start": scale_label(prefs.text_size_at_start(profile)).capitalize(),
             "sync_on_quit": prefs.sync_on_quit(profile).value.title(),
         }
         for item in self.query(ProfileSettingItem):
@@ -1405,6 +1408,10 @@ class SettingsScreen(Screen[None]):
                             prefs.set_audio_at_start(profile, not prefs.audio_at_start(profile))
                         elif item.key == "images_at_start":
                             prefs.set_images_at_start(profile, not prefs.images_at_start(profile))
+                        elif item.key == "text_size_at_start":
+                            prefs.set_text_size_at_start(
+                                profile, next_scale(prefs.text_size_at_start(profile))
+                            )
                         else:
                             prefs.set_sync_on_quit(profile, prefs.sync_on_quit(profile).next)
                     except OSError:
@@ -1912,6 +1919,7 @@ class ReviewScreen(NativeImageScreen):
         Binding("v", "view_image", "View picture", show=False, id="review.view_image"),
         Binding("m", "toggle_audio", "Audio", show=False, id="review.toggle_audio"),
         Binding("i", "toggle_images", "Images", show=False, id="review.toggle_images"),
+        Binding("z", "text_size", "Text size", show=False, id="review.text_size"),
         Binding("j", "scroll_down", "Scroll down", show=False),
         Binding("k", "scroll_up", "Scroll up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
@@ -1929,6 +1937,7 @@ class ReviewScreen(NativeImageScreen):
         self.expanded_sections: set[str] = set()
         self.selected_folded = 0
         self._displayed_counts = deck.counts
+        self._large_front_notice: tuple[object, float] | None = None
         self._rendered_card_width = 0
         self._rating_feedback: int | None = None
         self._rating_feedback_timer: Timer | None = None
@@ -2103,6 +2112,7 @@ class ReviewScreen(NativeImageScreen):
             ),
             show_readings=self.show_readings,
             media_active=self.repetui.media_downloading,
+            large_front=self._large_front_enabled(),
         )
         self._visible_images = tuple(
             source
@@ -2116,7 +2126,21 @@ class ReviewScreen(NativeImageScreen):
                 if not path.is_file():
                     pending_pictures.append(path)
         self._pending_pictures = tuple(pending_pictures)
-        native_marks: list[tuple[Path, int, int]] = []
+        native_marks: list[tuple] = []
+        if self._large_front_enabled():
+            card_rows = self.query_one("#card-scroll", VerticalScroll).size.height - 1
+            flow, drawn = expand_large_front(
+                flow, self.repetui.text_scale, self._rendered_card_width, card_rows,
+                self.repetui.cell_pixels, self._card_background(), native_marks,
+            )
+            notice = (self.card.id, self.repetui.text_scale)
+            if not drawn and card_rows > 0 and self._large_front_notice != notice:
+                self._large_front_notice = notice
+                self.notify(
+                    f"This front is too long for {scale_label(self.repetui.text_scale)}; "
+                    "showing it at normal size.",
+                    timeout=3,
+                )
         if self.repetui.images_enabled:
             flow = expand_image_previews(
                 flow,
@@ -2252,6 +2276,28 @@ class ReviewScreen(NativeImageScreen):
         self.repetui.images_enabled = not self.repetui.images_enabled
         self._refresh_or_recover(reset_scroll=False)
         self.notify("images on" if self.repetui.images_enabled else "images off", timeout=1.5)
+
+    def action_text_size(self) -> None:
+        if self._busy():
+            return
+        if self._native is None or not self._native.enabled:
+            self.notify(
+                "Larger text needs a terminal that shows images (Kitty graphics).",
+                severity="warning",
+            )
+            return
+        self.repetui.text_scale = next_scale(self.repetui.text_scale)
+        self._large_front_notice = None
+        self._refresh_or_recover(reset_scroll=False)
+        self.notify(f"text {scale_label(self.repetui.text_scale)}", timeout=1.5)
+
+    def _large_front_enabled(self) -> bool:
+        return self.repetui.text_scale > 1 and self._native is not None and self._native.enabled
+
+    def _card_background(self) -> tuple[int, int, int]:
+        with contextlib.suppress(Exception):
+            return self.query_one("#card", Static).background_colors[1].rgb
+        return (17, 20, 22)
 
     def action_view_image(self) -> None:
         if self._busy() or self.card is None:
@@ -3312,6 +3358,8 @@ class RepetuiApp(App[None]):
         self.set_keymap(self.review_controls.keymap())
         self.audio_enabled = self.preferences.audio_at_start(profile)
         self.images_enabled = self.preferences.images_at_start(profile)
+        self.text_scale = self.preferences.text_size_at_start(profile)
+        self.cell_pixels: tuple[float, float] | None = None  # from in-band resize reports
         self.lifecycle = CollectionLifecycle(backend, profile, syncer, full_syncer)
         self._sync_popup: SyncPopup | None = None
         self._sync_thread: Thread | None = None
@@ -3411,6 +3459,11 @@ class RepetuiApp(App[None]):
                 timeout=10,
             )
 
+    def on_resize(self, event: events.Resize) -> None:
+        pixels = event.pixel_size
+        if pixels is not None and event.size.width and event.size.height and pixels.width:
+            self.cell_pixels = (pixels.width / event.size.width, pixels.height / event.size.height)
+
     def on_instance_close_requested(self, message: InstanceCloseRequested) -> None:
         if not self.syncing:
             self.exit()
@@ -3489,6 +3542,8 @@ class RepetuiApp(App[None]):
         if driver is not None:
             replay_terminal_modes(driver)
         self.screen.refresh(repaint=True, layout=True)
+        if isinstance(self.screen, NativeImageScreen):
+            self.screen._native_invalidated()  # a re-attached terminal has no pictures yet
 
     def action_quit(self) -> None:
         if isinstance(self.screen, SyncOnQuitPrompt):

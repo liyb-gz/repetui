@@ -59,7 +59,7 @@ def test_binding_conflict_requires_confirmation_and_unbinds_displaced_action() -
 
 
 def test_selected_action_can_restore_its_default_binding() -> None:
-    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "z")
+    customized = ReviewControls.defaults().with_binding(ReviewAction.UNDO, "w")
 
     restored = customized.with_default(ReviewAction.UNDO)
 
@@ -94,3 +94,11 @@ def test_ctrl_l_is_fixed() -> None:
     from repetui.controls import is_supported_control_key
 
     assert not is_supported_control_key("ctrl+l")
+
+
+def test_text_size_defaults_to_z_and_yields_z_to_an_older_saved_binding() -> None:
+    assert ReviewControls.defaults().binding(ReviewAction.TEXT_SIZE) == "z"
+    # someone who already bound z to undo keeps it; text size starts unbound
+    migrated = ReviewControls.from_saved({"undo": "z"})
+    assert migrated.binding(ReviewAction.UNDO) == "z"
+    assert migrated.binding(ReviewAction.TEXT_SIZE) is None
