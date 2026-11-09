@@ -6129,3 +6129,40 @@ async def test_the_front_falls_back_to_text_when_native_output_fails(tmp_path) -
         await pilot.pause()
         assert review._native.enabled is False
         assert "소금은" in str(review.query_one("#card", Static).render())
+
+
+@pytest.mark.asyncio
+async def test_deck_counts_refresh_when_returning_from_review(tmp_path) -> None:
+    app, backend = make_app(tmp_path)
+
+    async with app.run_test(size=(60, 10)) as pilot:
+        decks = app.screen
+        assert isinstance(decks, DeckScreen)
+        assert decks.query_one(DeckItem).deck.counts == DueCounts(2, 1, 7)
+
+        await pilot.press("enter")                       # review
+        assert isinstance(app.screen, ReviewScreen)
+        backend._decks = [Deck(1, "Japanese", 0, DueCounts(1, 1, 6))]   # cards were answered
+        await pilot.press("escape")                      # back to the deck list
+        await pilot.pause()
+        assert app.screen is decks
+        assert decks.query_one(DeckItem).deck.counts == DueCounts(1, 1, 6)
+
+
+@pytest.mark.asyncio
+async def test_deck_list_does_not_read_a_closed_collection_on_resume(tmp_path) -> None:
+    app, backend = make_app(tmp_path)
+
+    async with app.run_test(size=(60, 10)) as pilot:
+        decks = app.screen
+        assert isinstance(decks, DeckScreen)
+        await pilot.press("enter")
+        assert isinstance(app.screen, ReviewScreen)
+        backend.is_open = False                          # e.g. closed for a sync
+
+        def closed() -> list[Deck]:
+            raise AssertionError("decks() read while the collection is closed")
+
+        backend.decks = closed
+        decks.on_screen_resume()
+        assert decks.query_one(DeckItem).deck.counts == DueCounts(2, 1, 7)

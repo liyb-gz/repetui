@@ -585,9 +585,13 @@ class DeckScreen(Screen[None]):
             self.repetui.backend.decks(),
             self.repetui.preferences.expanded_deck_ids(self.repetui.profile),
         )
-        view.clear()
-        for row in rows:
-            view.append(DeckItem(row))
+        if rows != getattr(self, "_rows", None):
+            # Rebuild only on a real change: two rebuilds in a row (a sync's refresh, then the
+            # list being uncovered) would remove rows that are still mounting.
+            self._rows = rows
+            view.clear()
+            for row in rows:
+                view.append(DeckItem(row))
         if rows:
             selected_index = next(
                 (
@@ -601,6 +605,20 @@ class DeckScreen(Screen[None]):
 
     def backend_refreshed(self) -> None:
         self.reload()
+
+    def on_screen_suspend(self) -> None:
+        self._covered = True
+
+    def on_screen_resume(self) -> None:
+        # Back from review (or any screen on top): reviews changed the due counts. The first
+        # resume (the screen being shown at all) follows on_mount's own load, so it is skipped.
+        if not getattr(self, "_covered", False):
+            return
+        self._covered = False
+        if self.repetui.backend.is_open and not self.repetui.syncing:
+            # keep the shown list on a failed read; a failed read after sync has its own recovery
+            with contextlib.suppress(Exception):
+                self.reload()
 
     def action_down(self) -> None:
         self.query_one(ListView).action_cursor_down()
