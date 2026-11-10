@@ -67,6 +67,7 @@ from .images import (
 )
 from .large_text import expand_large_front, next_scale, scale_label
 from .lifecycle import CollectionLifecycle, SyncRunResult
+from .media_labels import hide_media_labels
 from .media_sync import MediaSyncSnapshot, MediaSyncStatus, MediaSyncTask
 from .native_images import NativeImageOverlay, NativePicture, mark_native_picture, overlay_for_app
 from .preferences import (
@@ -1272,6 +1273,7 @@ class SettingsScreen(Screen[None]):
                 ProfileSettingItem("audio_at_start", "Audio at start"),
                 ProfileSettingItem("images_at_start", "Images at start"),
                 ProfileSettingItem("text_size_at_start", "Text size at start"),
+                ProfileSettingItem("media_labels", "Media labels"),
                 ProfileSettingItem("sync_on_quit", "Sync on quit"),
                 id="settings-controls",
             ),
@@ -1318,6 +1320,7 @@ class SettingsScreen(Screen[None]):
             "audio_at_start": "On" if prefs.audio_at_start(profile) else "Off",
             "images_at_start": "On" if prefs.images_at_start(profile) else "Off",
             "text_size_at_start": scale_label(prefs.text_size_at_start(profile)).capitalize(),
+            "media_labels": "Hide" if prefs.media_labels_hidden(profile) else "Show",
             "sync_on_quit": prefs.sync_on_quit(profile).value.title(),
         }
         for item in self.query(ProfileSettingItem):
@@ -1426,6 +1429,10 @@ class SettingsScreen(Screen[None]):
                             prefs.set_audio_at_start(profile, not prefs.audio_at_start(profile))
                         elif item.key == "images_at_start":
                             prefs.set_images_at_start(profile, not prefs.images_at_start(profile))
+                        elif item.key == "media_labels":
+                            prefs.set_media_labels_hidden(
+                                profile, not prefs.media_labels_hidden(profile)
+                            )
                         elif item.key == "text_size_at_start":
                             prefs.set_text_size_at_start(
                                 profile, next_scale(prefs.text_size_at_start(profile))
@@ -2157,6 +2164,10 @@ class ReviewScreen(NativeImageScreen):
                 if not path.is_file():
                     pending_pictures.append(path)
         self._pending_pictures = tuple(pending_pictures)
+        hide_labels = self.repetui.preferences.media_labels_hidden(self.repetui.profile)
+        if hide_labels:
+            # after _visible_images: v still opens the card's pictures
+            flow = hide_media_labels(flow, keep_pictures=self.repetui.images_enabled)
         native_marks: list[tuple] = []
         if self._large_front_enabled():
             card_rows = self.query_one("#card-scroll", VerticalScroll).size.height - 1
@@ -2180,6 +2191,7 @@ class ReviewScreen(NativeImageScreen):
                 max(1, min(3, self.size.height - 3)),
                 native_marks,
                 media_pending=self.repetui.media_downloading,
+                hide_labels=hide_labels,
             )
         self._native_pictures = tuple(NativePicture(*mark) for mark in native_marks)
         self._refresh_action_row(actions)

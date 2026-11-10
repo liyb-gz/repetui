@@ -99,6 +99,7 @@ The Controls tab also holds three profile-scoped settings:
 | Audio at start | On / Off | On | Whether recorded sound is on when `repetui` starts; `m` toggles it for the session |
 | Images at start | On / Off | Off | Whether pictures are shown (rather than `[image]`) when `repetui` starts; `i` toggles it for the session |
 | Text size at start | Normal / 1.5× / 2× / 3× | Normal | Front side text size when `repetui` starts; `z` cycles it for the session |
+| Media labels | Show / Hide | Show | Hide removes `[audio]`, `[image]`, `[video]`, `[math]` and `[media]` from the card entirely; sound still plays, `p` still replays it, and with images on pictures still appear where their labels were |
 | Sync on quit | Off / Ask / On | On | What `q` does when you have unsynced reviews |
 
 With **Sync on quit** On, `q` syncs your reviews first and quits when the sync
@@ -178,7 +179,8 @@ pictures, video and math images appear as `[audio]`, `[image]`, `[video]` and
 `[math]`, numbered per card side (`[audio 1]`, `[audio 2]`) when a side has more
 than one, including in ruby readings. As a final safeguard, any referenced media
 file name that would still reach the screen (for example, typed into a field) is
-shown as `[media]`. A plain word is never hidden, even when the audio is named
+shown as `[media]`. The **Media labels** setting can hide all of these labels.
+A plain word is never hidden, even when the audio is named
 after it (`hallo.mp3` hides `hallo.mp3`, not `hallo`).
 
 When images are on (**Images at start** is Off by default; `i` turns them on for

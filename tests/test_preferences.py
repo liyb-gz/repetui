@@ -537,3 +537,16 @@ def test_normal_text_size_is_not_stored(tmp_path) -> None:
     store.set_text_size_at_start(profile, 3.0)
     store.set_text_size_at_start(profile, 1.0)
     assert "text_size_at_start" not in (tmp_path / "preferences.json").read_text()
+
+
+def test_media_labels_hidden_is_saved_per_profile_and_off_by_default(tmp_path) -> None:
+    store = JsonPreferences(tmp_path / "preferences.json")
+    one = ProfilePaths(tmp_path, "one", tmp_path / "one.anki2")
+    two = ProfilePaths(tmp_path, "two", tmp_path / "two.anki2")
+    assert store.media_labels_hidden(one) is False
+    store.set_media_labels_hidden(one, True)
+    restarted = JsonPreferences(tmp_path / "preferences.json")
+    assert restarted.media_labels_hidden(one) is True
+    assert restarted.media_labels_hidden(two) is False
+    restarted.set_media_labels_hidden(one, False)
+    assert "hide_media_labels" not in (tmp_path / "preferences.json").read_text()

@@ -130,8 +130,11 @@ def expand_image_previews(
     native_marks: list[tuple[Path, int, int]] | None = None,
     *,
     media_pending: bool = False,
+    hide_labels: bool = False,
 ) -> Text:
-    """Insert previews after visible, marked image labels in their card order."""
+    """Insert previews after visible, marked image labels in their card order.
+
+    With `hide_labels`, each preview takes its label's place instead."""
     marked = []
     for span in document.spans:
         style = Style.parse(span.style) if isinstance(span.style, str) else span.style
@@ -146,7 +149,7 @@ def expand_image_previews(
     for start, end, source in sorted(marked):
         if start < cursor:
             continue
-        result.append_text(document[cursor:end])
+        result.append_text(document[cursor:start] if hide_labels else document[cursor:end])
         path = None
         try:
             path = resolve_local_image(source, resolve)

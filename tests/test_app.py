@@ -2761,7 +2761,7 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
         assert controls.display is True
         assert controls.region == (0, 2, 40, 3)
         rows = list(controls.children)
-        assert len(rows) == len(ReviewAction) + 5
+        assert len(rows) == len(ReviewAction) + 6
         rendered_rows = [
             (
                 str(row.query_one(".control-label").render()),
@@ -2791,6 +2791,7 @@ async def test_controls_tab_lists_every_review_action_and_binding_at_40x6(tmp_pa
             ("Audio at start", "On"),
             ("Images at start", "Off"),
             ("Text size at start", "Normal"),
+            ("Media labels", "Show"),
             ("Sync on quit", "On"),
         ]
         assert settings.query_one("#settings-footer").region == (0, 5, 40, 1)
@@ -2866,11 +2867,11 @@ async def test_action_feedback_duration_cycles_in_settings_and_recovers_from_wri
     app, _ = make_app(tmp_path, preferences=preferences)
 
     async with app.run_test(size=(40, 6)) as pilot:
-        # G lands on the last row; the duration row now sits four rows above it
-        await pilot.press("enter", "?", "h", "G", "k", "k", "k", "k")
+        # G lands on the last row; the duration row now sits five rows above it
+        await pilot.press("enter", "?", "h", "G", "k", "k", "k", "k", "k")
         settings = app.screen
         assert isinstance(settings, SettingsScreen)
-        row = settings.query_one("#settings-controls").children[-5]
+        row = settings.query_one("#settings-controls").children[-6]
         assert str(row.query_one(".control-label").render()) == (
             "Action feedback duration"
         )
@@ -3456,7 +3457,7 @@ async def test_controls_tab_rows_are_one_line_tall_at_40x24(tmp_path) -> None:
         settings._show_tab("controls")
         await pilot.pause()
         rows = list(settings.query_one("#settings-controls").children)
-        assert len(rows) == len(ReviewAction) + 5
+        assert len(rows) == len(ReviewAction) + 6
         assert [row.region.height for row in rows] == [1] * len(rows)
 
 
@@ -6064,10 +6065,10 @@ async def test_text_size_at_start_cycles_in_settings_and_applies_on_start(tmp_pa
     preferences = JsonPreferences(tmp_path / "preferences.json")
     app, _ = make_app(tmp_path, preferences=preferences)
     async with app.run_test(size=(40, 6)) as pilot:
-        await pilot.press("enter", "?", "h", "G", "k")
+        await pilot.press("enter", "?", "h", "G", "k", "k")
         settings = app.screen
         assert isinstance(settings, SettingsScreen)
-        row = settings.query_one("#settings-controls").children[-2]
+        row = settings.query_one("#settings-controls").children[-3]
         assert str(row.query_one(".control-label").render()) == "Text size at start"
         for expected in ("1.5×", "2×", "3×", "Normal", "1.5×"):
             await pilot.press("space")
@@ -6166,3 +6167,39 @@ async def test_deck_list_does_not_read_a_closed_collection_on_resume(tmp_path) -
         backend.decks = closed
         decks.on_screen_resume()
         assert decks.query_one(DeckItem).deck.counts == DueCounts(2, 1, 7)
+
+
+@pytest.mark.asyncio
+async def test_media_labels_setting_hides_labels_on_the_card(tmp_path) -> None:
+    preferences = JsonPreferences(tmp_path / "preferences.json")
+    content = RawCardContent(
+        CardTemplateIdentity(1, "Korean", 0, "Card"),
+        "박히다[sound:a.mp3]", "<hr id=answer>to be stuck [sound:b.mp3]",
+    )
+    app, _ = make_app(tmp_path, content, preferences=preferences)
+
+    async with app.run_test(size=(60, 12)) as pilot:
+        await pilot.press("enter")
+        review = app.screen
+        assert isinstance(review, ReviewScreen)
+        assert "[audio]" in str(review.query_one("#card", Static).render())
+
+        await pilot.press("?", "h", "G", "k")               # just above Sync on quit
+        settings = app.screen
+        assert isinstance(settings, SettingsScreen)
+        row = settings.query_one("#settings-controls").children[-2]
+        assert str(row.query_one(".control-label").render()) == "Media labels"
+        assert str(row.query_one(".control-binding").render()) == "Show"
+        await pilot.press("space")
+        assert str(row.query_one(".control-binding").render()) == "Hide"
+        assert preferences.media_labels_hidden(app.profile) is True
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is review
+        shown = str(review.query_one("#card", Static).render())
+        assert "[audio]" not in shown and "박히다" in shown
+        await pilot.press("space")                          # reveal: the back has none either
+        await pilot.pause()
+        shown = str(review.query_one("#card", Static).render())
+        assert "[audio]" not in shown and "to be stuck" in shown

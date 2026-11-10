@@ -114,6 +114,10 @@ class Preferences(Protocol):
 
     def text_size_at_start(self, profile: ProfilePaths) -> float: ...
 
+    def media_labels_hidden(self, profile: ProfilePaths) -> bool: ...
+
+    def set_media_labels_hidden(self, profile: ProfilePaths, hidden: bool) -> None: ...
+
     def set_text_size_at_start(self, profile: ProfilePaths, scale: float) -> None: ...
 
     def sync_on_quit(self, profile: ProfilePaths) -> SyncOnQuit: ...
@@ -334,6 +338,17 @@ class JsonPreferences:
                 saved_profile["images_at_start"] = True
             else:
                 saved_profile.pop("images_at_start", None)
+
+    def media_labels_hidden(self, profile: ProfilePaths) -> bool:
+        saved = self._profiles.get(self._profile_key(profile), {}).get("hide_media_labels", False)
+        return saved is True
+
+    def set_media_labels_hidden(self, profile: ProfilePaths, hidden: bool) -> None:
+        with self._edit(profile=profile) as saved_profile:
+            if hidden:
+                saved_profile["hide_media_labels"] = True
+            else:
+                saved_profile.pop("hide_media_labels", None)
 
     def text_size_at_start(self, profile: ProfilePaths) -> float:
         saved = self._profiles.get(self._profile_key(profile), {}).get("text_size_at_start", 1.0)
